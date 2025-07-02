@@ -1,0 +1,12 @@
+/vendor
+/node_modules
+/.env
+/.git
+/.gitignore
+/storage/*.key
+/storage/logs/*
+/bootstrap/cache/*
+/composer.lock
+/tests
+.env.example
+.phpunit.result.cache
