@@ -22,7 +22,9 @@ RUN composer install --no-dev --optimize-autoloader || { echo "Composer install 
 RUN mkdir -p /app/storage/app /app/storage/logs /app/bootstrap/cache /tmp \
     && chown -R www-data:www-data /app /app/storage /app/bootstrap/cache /tmp \
     && chmod -R 775 /app/storage /app/bootstrap/cache /tmp \
-    && chmod -R 777 /app/storage/logs
+    && chmod -R 777 /app/storage/logs \
+    && chmod -R 775 /tmp \
+    && ls -ld /app/storage/logs /tmp > /tmp/permissions.log
 
 # کپی تنظیمات nginx و supervisord
 COPY docker/nginx.conf /etc/nginx/nginx.conf

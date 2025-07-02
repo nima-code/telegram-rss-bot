@@ -16,14 +16,16 @@ class CheckFeedsController extends Controller
         try {
             Log::info("Fetching RSS feed: $url");
             $response = Http::withOptions([
-                'timeout' => 20,
+                'timeout' => 10,
                 'verify' => false,
-                'user_agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                'user_agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36'
             ])->get($url);
+
+            Log::info("Raw RSS response for $url: " . substr($response->body(), 0, 1000));
 
             if ($response->successful()) {
                 Log::info("Successfully fetched feed $url, parsing XML");
-                $xml = @simplexml_load_string($response->body(), 'SimpleXMLElement', LIBXML_NOCDATA | LIBXML_NOERROR);
+                $xml = @simplexml_load_string($response->body(), 'SimpleXMLElement', LIBXML_NOCDATA);
                 if ($xml !== false && isset($xml->channel->item)) {
                     Log::info("Successfully parsed RSS feed for $url, found " . count($xml->channel->item) . " items");
                     return $xml;
@@ -50,8 +52,10 @@ class CheckFeedsController extends Controller
             }
             Log::info("Starting check-feeds for chat_id: $chatId");
 
-            // فقط فید خبرآنلاین
-            $feeds = ['خبرآنلاین' => 'https://www.khabaronline.ir/rss'];
+            $feeds = [
+                'خبرآنلاین' => 'https://www.khabaronline.ir/rss',
+                'ایسنا' => 'https://www.isna.ir/rss'
+            ];
 
             $telegram = new Api(env('TELEGRAM_BOT_TOKEN'));
             $results = [];
@@ -61,7 +65,7 @@ class CheckFeedsController extends Controller
                 Log::info("Processing feed: $name ($url)");
                 $feed = $this->fetchRssFeed($url);
                 if ($feed && isset($feed->channel->item)) {
-                    $items = array_slice((array) $feed->channel->item, 0, 3);
+                    $items = array_slice((array) $feed->channel->item, 0, 1);
                     foreach ($items as $item) {
                         try {
                             $title = (string) ($item->title ?? 'بدون عنوان');
