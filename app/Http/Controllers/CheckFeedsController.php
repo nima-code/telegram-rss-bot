@@ -16,13 +16,14 @@ class CheckFeedsController extends Controller
         try {
             Log::info("Fetching RSS feed: $url");
             $response = Http::withOptions([
-                'timeout' => 20,
+                'timeout' => 40,
                 'verify' => false,
                 'user_agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             ])->get($url);
 
             Log::info("HTTP Status for $url: {$response->status()}");
             Log::debug("Response headers for $url: " . json_encode($response->headers()));
+            Log::debug("Raw XML response for $url: " . substr($response->body(), 0, 2000));
 
             if ($response->successful()) {
                 Log::info("Successfully fetched feed $url, parsing XML");
@@ -53,7 +54,6 @@ class CheckFeedsController extends Controller
             }
             Log::info("Starting check-feeds for chat_id: $chatId");
 
-            // فقط فید خبرآنلاین
             $feeds = ['خبرآنلاین' => 'https://www.khabaronline.ir/rss'];
 
             $telegram = new Api(env('TELEGRAM_BOT_TOKEN'));
@@ -61,7 +61,7 @@ class CheckFeedsController extends Controller
 
             date_default_timezone_set('Asia/Tehran');
             foreach ($feeds as $name => $url) {
-                Log::info("Processing feed: $name ($url)");
+                Log::info("Processing feed: $name ($url) for chat_id $chatId");
                 $feed = $this->fetchRssFeed($url);
                 if ($feed && isset($feed->channel->item)) {
                     $items = array_slice((array) $feed->channel->item, 0, 3);
@@ -96,11 +96,11 @@ class CheckFeedsController extends Controller
                                 'pubDate' => $jalaliDate
                             ];
                         } catch (\Exception $e) {
-                            Log::error("Error processing feed item from $url: {$e->getMessage()}, Trace: {$e->getTraceAsString()}");
+                            Log::error("Error processing feed item from $url for chat_id $chatId: {$e->getMessage()}, Trace: {$e->getTraceAsString()}");
                         }
                     }
                 } else {
-                    Log::warning("No items or invalid feed: $url");
+                    Log::warning("No items or invalid feed: $url for chat_id $chatId");
                 }
             }
 

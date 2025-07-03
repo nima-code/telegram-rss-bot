@@ -18,50 +18,23 @@ class TelegramHandler
         $this->telegram = $telegram;
         $this->chatId = $chatId;
         $this->config = $this->loadConfig();
+        Log::info("Initialized TelegramHandler for chat_id: {$this->chatId}");
     }
 
     protected function loadConfig()
     {
         try {
-            $feedsEnv = env('FEEDS');
+            Log::info("Loading feeds for chat_id {$this->chatId}");
             $config = [
-                'feeds' => [],
+                'feeds' => ['خبرآنلاین' => 'https://www.khabaronline.ir/rss'],
                 'auto_send' => true
             ];
-
-            if ($feedsEnv) {
-                Log::info("Loading feeds from environment variable for chat_id {$this->chatId}");
-                $feeds = explode(',', $feedsEnv);
-                foreach ($feeds as $feed) {
-                    [$name, $url] = array_map('trim', explode(':', $feed, 2));
-                    if (filter_var($url, FILTER_VALIDATE_URL)) {
-                        $config['feeds'][$name] = $url;
-                    }
-                }
-            } else {
-                Log::info("No FEEDS env variable found for chat_id {$this->chatId}, using default feeds");
-                $config['feeds'] = [
-                    'زومیت' => 'https://www.zoomit.ir/rss',
-                    'بی‌بی‌سی' => 'https://www.bbc.com/persian/index.xml',
-                    'خبرآنلاین' => 'https://www.khabaronline.ir/rss',
-                    'تابناک' => 'https://www.tabnak.ir/fa/rss/allnews',
-                    'ایسنا' => 'https://www.isna.ir/rss'
-                ];
-            }
-            Log::info("Received message from chat_id: {$this->chatId}");
-
             Log::info("Loaded config for chat_id {$this->chatId}: " . json_encode($config));
             return $config;
         } catch (\Exception $e) {
             Log::error("Error loading config for chat_id {$this->chatId}: {$e->getMessage()}, Trace: {$e->getTraceAsString()}");
             return [
-                'feeds' => [
-                    'زومیت' => 'https://www.zoomit.ir/rss',
-                    'بی‌بی‌سی' => 'https://www.bbc.com/persian/index.xml',
-                    'خبرآنلاین' => 'https://www.khabaronline.ir/rss',
-                    'تابناک' => 'https://www.tabnak.ir/fa/rss/allnews',
-                    'ایسنا' => 'https://www.isna.ir/rss'
-                ],
+                'feeds' => ['خبرآنلاین' => 'https://www.khabaronline.ir/rss'],
                 'auto_send' => true
             ];
         }
@@ -69,7 +42,6 @@ class TelegramHandler
 
     protected function saveConfig($config = null)
     {
-        // در پلن رایگان Render، از نوشتن به دیسک اجتناب می‌کنیم
         Log::info("Config saving is disabled in Render free plan for chat_id {$this->chatId}");
         return true;
     }
@@ -80,7 +52,7 @@ class TelegramHandler
             'keyboard' => [
                 ['دریافت اخبار', 'نمایش فیدها'],
                 ['شروع فیدها', 'توقف'],
-                ['تغییر فید', 'درباره']
+                ['درباره']
             ],
             'resize_keyboard' => true,
             'one_time_keyboard' => false
@@ -93,11 +65,11 @@ class TelegramHandler
             Log::info("Received Telegram message for chat_id {$this->chatId}: " . json_encode($message));
             $text = isset($message['text']) ? $message['text'] : '';
             $replyMarkup = json_encode($this->getReplyMarkup());
-            
+
             if ($text === '/start') {
                 $this->telegram->sendMessage([
                     'chat_id' => $this->chatId,
-                    'text' => 'به بات خوش اومدی! اخبار رو با دکمه‌ها مدیریت کن. فیدهای پیش‌فرض: زومیت، بی‌بی‌سی، خبرآنلاین، تابناک، ایسنا.',
+                    'text' => 'به بات خوش اومدی! اخبار رو با دکمه‌ها مدیریت کن. فید پیش‌فرض: خبرآنلاین.',
                     'reply_markup' => $replyMarkup
                 ]);
             } elseif ($text === 'دریافت اخبار') {
@@ -107,11 +79,23 @@ class TelegramHandler
                 ]);
 
                 try {
+                    Log::info("Calling /check-feeds for chat_id {$this->chatId}");
                     $controller = new CheckFeedsController();
                     $request = Request::create('/check-feeds?chat_id=' . $this->chatId, 'GET');
                     $response = $controller->check($request);
+                    $statusCode = $response->getStatusCode();
                     $content = $response->getContent();
-                    Log::info("Check-feeds response for chat_id {$this->chatId}: {$content}");
+                    Log::info("Check-feeds response for chat_id {$this->chatId}: Status {$statusCode}, Content: {$content}");
+
+                    if ($statusCode !== 200) {
+                        Log::error("Non-200 response from /check-feeds for chat_id {$this->chatId}: Status {$statusCode}");
+                        $this->telegram->sendMessage([
+                            'chat_id' => $this->chatId,
+                            'text' => "خطا: سرور پاسخ {$statusCode} داد",
+                            'reply_markup' => $replyMarkup
+                        ]);
+                        return;
+                    }
 
                     if (empty($content)) {
                         Log::error("Empty response from /check-feeds for chat_id {$this->chatId}");
@@ -163,7 +147,6 @@ class TelegramHandler
                 ]);
             } elseif ($text === 'شروع فیدها') {
                 $this->config['auto_send'] = true;
-                // در Render رایگان، ذخیره‌سازی غیرفعال است
                 $this->telegram->sendMessage([
                     'chat_id' => $this->chatId,
                     'text' => 'ارسال خودکار اخبار فعال شد! هر ۱۵ دقیقه اخبار جدید میاد.',
@@ -171,28 +154,15 @@ class TelegramHandler
                 ]);
             } elseif ($text === 'توقف') {
                 $this->config['auto_send'] = false;
-                // در Render رایگان، ذخیره‌سازی غیرفعال است
                 $this->telegram->sendMessage([
                     'chat_id' => $this->chatId,
                     'text' => 'ارسال خودکار اخبار متوقف شد!',
                     'reply_markup' => $replyMarkup
                 ]);
-            } elseif ($text === 'تغییر فید') {
-                $this->telegram->sendMessage([
-                    'chat_id' => $this->chatId,
-                    'text' => "متأسفانه تغییر فید در پلن رایگان Render پشتیبانی نمی‌شود. فیدهای پیش‌فرض استفاده می‌شوند.",
-                    'reply_markup' => $replyMarkup
-                ]);
-            } elseif (isset($message['reply_to_message']) && strpos($message['reply_to_message']['text'], 'فید جدید رو اینجوری وارد کن') !== false) {
-                $this->telegram->sendMessage([
-                    'chat_id' => $this->chatId,
-                    'text' => 'تغییر فید در پلن رایگان Render پشتیبانی نمی‌شود.',
-                    'reply_markup' => $replyMarkup
-                ]);
             } elseif ($text === 'درباره') {
                 $this->telegram->sendMessage([
                     'chat_id' => $this->chatId,
-                    'text' => 'این بات اخبار و مطالب رو از فیدهای دلخواهت جمع می‌کنه و می‌فرسته. فیدهای پیش‌فرض: زومیت، بی‌بی‌سی، خبرآنلاین، تابناک، ایسنا.',
+                    'text' => 'این بات اخبار رو از فید خبرآنلاین جمع می‌کنه و می‌فرسته.',
                     'reply_markup' => $replyMarkup
                 ]);
             } else {

@@ -17,10 +17,10 @@
            $this->info('Checking RSS feeds...');
            Log::info('Checking RSS feeds for all users');
 
-           // بارگذاری فیدها از متغیر محیطی
            $feedsEnv = env('FEEDS');
            $config = ['feeds' => [], 'auto_send' => true];
            if ($feedsEnv) {
+               Log::info('Loading feeds from FEEDS env variable');
                $feeds = explode(',', $feedsEnv);
                foreach ($feeds as $feed) {
                    [$name, $url] = array_map('trim', explode(':', $feed, 2));
@@ -29,21 +29,14 @@
                    }
                }
            } else {
-               $config['feeds'] = [
-                   'زومیت' => 'https://www.zoomit.ir/rss',
-                   'بی‌بی‌سی' => 'https://www.bbc.com/persian/index.xml',
-                   'خبرآنلاین' => 'https://www.khabaronline.ir/rss',
-                   'تابناک' => 'https://www.tabnak.ir/fa/rss/allnews',
-                   'ایسنا' => 'https://www.isna.ir/rss'
-               ];
+               Log::info('No FEEDS env variable found, using default feed');
+               $config['feeds'] = ['خبرآنلاین' => 'https://www.khabaronline.ir/rss'];
            }
 
-           // بارگذاری chat_idها از متغیر محیطی
            $chatIds = env('CHAT_IDS') ? explode(',', env('CHAT_IDS')) : [];
-
            if (empty($chatIds)) {
                Log::warning('No chat_ids found in CHAT_IDS env variable');
-               $chatIds = ['default']; // برای تست
+               $chatIds = ['default'];
            }
 
            foreach ($chatIds as $chatId) {
@@ -53,7 +46,15 @@
                        $controller = new CheckFeedsController();
                        $request = Request::create('/check-feeds?chat_id=' . $chatId, 'GET');
                        $response = $controller->check($request);
+                       $statusCode = $response->getStatusCode();
                        $content = $response->getContent();
+                       Log::info("Check-feeds response for chat_id $chatId: Status {$statusCode}, Content: {$content}");
+
+                       if ($statusCode !== 200) {
+                           Log::error("Non-200 response from /check-feeds for chat_id $chatId: Status {$statusCode}");
+                           continue;
+                       }
+
                        if (empty($content)) {
                            Log::error("Empty response for feed: $name ($url) for chat_id $chatId");
                            continue;
