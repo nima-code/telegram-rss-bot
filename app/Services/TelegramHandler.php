@@ -48,6 +48,7 @@ class TelegramHandler
                     'ایسنا' => 'https://www.isna.ir/rss'
                 ];
             }
+            Log::info("Received message from chat_id: {$this->chatId}");
 
             Log::info("Loaded config for chat_id {$this->chatId}: " . json_encode($config));
             return $config;
