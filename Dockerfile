@@ -18,8 +18,15 @@ COPY . /app
 # نصب وابستگی‌های Composer
 RUN composer install --no-dev --optimize-autoloader || { echo "Composer install failed"; exit 1; }
 
-# کپی فایل entrypoint
+# ایجاد دایرکتوری برای supervisord
+RUN mkdir -p /etc/supervisor/conf.d
+
+# کپی فایل‌های تنظیمات
+COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+COPY docker/nginx.conf /etc/nginx/nginx.conf
 COPY entrypoint.sh /entrypoint.sh
+
+# تنظیم پرمیشن برای entrypoint
 RUN chmod +x /entrypoint.sh
 
 # باز کردن پورت 80
