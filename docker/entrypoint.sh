@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-# تنظیم پرمیشن‌ها
+# تنظیم پرمیشن‌ها برای دایرکتوری‌های مورد نیاز
 mkdir -p /app/storage/app /app/storage/logs /app/bootstrap/cache /tmp
 chown -R www-data:www-data /app /app/storage /app/bootstrap/cache /tmp
 chmod -R 775 /app/storage /app/bootstrap/cache /tmp

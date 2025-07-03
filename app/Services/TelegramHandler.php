@@ -11,71 +11,48 @@ class TelegramHandler
 {
     protected $telegram;
     protected $chatId;
-    protected $configFile;
     protected $config;
 
     public function __construct(Api $telegram, string $chatId)
     {
         $this->telegram = $telegram;
         $this->chatId = $chatId;
-        $this->configFile = storage_path('app/feeds_config_' . $chatId . '.json');
         $this->config = $this->loadConfig();
     }
 
     protected function loadConfig()
     {
         try {
-            $directory = storage_path('app');
-            Log::info("Checking storage directory: $directory");
-            if (!is_dir($directory)) {
-                Log::info("Creating directory: $directory");
-                mkdir($directory, 0755, true);
-                chown($directory, 'www-data');
-                chgrp($directory, 'www-data');
-            }
-            if (!is_writable($directory)) {
-                Log::warning("Directory not writable: $directory, attempting to fix");
-                chmod($directory, 0755);
-                if (!is_writable($directory)) {
-                    Log::error("Failed to make directory writable: $directory");
-                    throw new \Exception("Storage directory is not writable");
-                }
-            }
+            $feedsEnv = env('FEEDS');
+            $config = [
+                'feeds' => [],
+                'auto_send' => true
+            ];
 
-            if (file_exists($this->configFile)) {
-                $config = json_decode(file_get_contents($this->configFile), true);
-                if ($config === null || !isset($config['feeds'])) {
-                    Log::error("Invalid JSON in feeds_config_{$this->chatId}.json");
-                    $config = [
-                        'feeds' => [
-                            'زومیت' => 'https://www.zoomit.ir/rss',
-                            'بی‌بی‌سی' => 'https://www.bbc.com/persian/index.xml',
-                            'خبرآنلاین' => 'https://www.khabaronline.ir/rss',
-                            'تابناک' => 'https://www.tabnak.ir/fa/rss/allnews',
-                            'ایسنا' => 'https://www.isna.ir/rss'
-                        ],
-                        'auto_send' => true
-                    ];
-                    $this->saveConfig($config);
+            if ($feedsEnv) {
+                Log::info("Loading feeds from environment variable for chat_id {$this->chatId}");
+                $feeds = explode(',', $feedsEnv);
+                foreach ($feeds as $feed) {
+                    [$name, $url] = array_map('trim', explode(':', $feed, 2));
+                    if (filter_var($url, FILTER_VALIDATE_URL)) {
+                        $config['feeds'][$name] = $url;
+                    }
                 }
             } else {
-                Log::info("No config file found for chat_id {$this->chatId}, using default feeds");
-                $config = [
-                    'feeds' => [
-                        'زومیت' => 'https://www.zoomit.ir/rss',
-                        'بی‌بی‌سی' => 'https://www.bbc.com/persian/index.xml',
-                        'خبرآنلاین' => 'https://www.khabaronline.ir/rss',
-                        'تابناک' => 'https://www.tabnak.ir/fa/rss/allnews',
-                        'ایسنا' => 'https://www.isna.ir/rss'
-                    ],
-                    'auto_send' => true
+                Log::info("No FEEDS env variable found for chat_id {$this->chatId}, using default feeds");
+                $config['feeds'] = [
+                    'زومیت' => 'https://www.zoomit.ir/rss',
+                    'بی‌بی‌سی' => 'https://www.bbc.com/persian/index.xml',
+                    'خبرآنلاین' => 'https://www.khabaronline.ir/rss',
+                    'تابناک' => 'https://www.tabnak.ir/fa/rss/allnews',
+                    'ایسنا' => 'https://www.isna.ir/rss'
                 ];
-                $this->saveConfig($config);
             }
+
             Log::info("Loaded config for chat_id {$this->chatId}: " . json_encode($config));
             return $config;
         } catch (\Exception $e) {
-            Log::error("Error loading config for chat_id {$this->chatId}: {$e->getMessage()}");
+            Log::error("Error loading config for chat_id {$this->chatId}: {$e->getMessage()}, Trace: {$e->getTraceAsString()}");
             return [
                 'feeds' => [
                     'زومیت' => 'https://www.zoomit.ir/rss',
@@ -91,29 +68,9 @@ class TelegramHandler
 
     protected function saveConfig($config = null)
     {
-        try {
-            $directory = storage_path('app');
-            if (!is_dir($directory)) {
-                Log::info("Creating directory: $directory");
-                mkdir($directory, 0755, true);
-                chown($directory, 'www-data');
-                chgrp($directory, 'www-data');
-            }
-            if (!is_writable($directory)) {
-                Log::warning("Directory not writable: $directory, attempting to fix");
-                chmod($directory, 0755);
-                if (!is_writable($directory)) {
-                    Log::error("Failed to make directory writable: $directory");
-                    return false;
-                }
-            }
-            file_put_contents($this->configFile, json_encode($config ?? $this->config, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
-            Log::info("Successfully saved feeds_config_{$this->chatId}.json");
-            return true;
-        } catch (\Exception $e) {
-            Log::error("Error writing feeds_config_{$this->chatId}.json: {$e->getMessage()}");
-            return false;
-        }
+        // در پلن رایگان Render، از نوشتن به دیسک اجتناب می‌کنیم
+        Log::info("Config saving is disabled in Render free plan for chat_id {$this->chatId}");
+        return true;
     }
 
     protected function getReplyMarkup()
@@ -204,81 +161,32 @@ class TelegramHandler
                 ]);
             } elseif ($text === 'شروع فیدها') {
                 $this->config['auto_send'] = true;
-                if ($this->saveConfig()) {
-                    $this->telegram->sendMessage([
-                        'chat_id' => $this->chatId,
-                        'text' => 'ارسال خودکار اخبار فعال شد! هر ۱۵ دقیقه اخبار جدید میاد.',
-                        'reply_markup' => $replyMarkup
-                    ]);
-                } else {
-                    $this->telegram->sendMessage([
-                        'chat_id' => $this->chatId,
-                        'text' => 'خطا در فعال‌سازی!',
-                        'reply_markup' => $replyMarkup
-                    ]);
-                }
+                // در Render رایگان، ذخیره‌سازی غیرفعال است
+                $this->telegram->sendMessage([
+                    'chat_id' => $this->chatId,
+                    'text' => 'ارسال خودکار اخبار فعال شد! هر ۱۵ دقیقه اخبار جدید میاد.',
+                    'reply_markup' => $replyMarkup
+                ]);
             } elseif ($text === 'توقف') {
                 $this->config['auto_send'] = false;
-                if ($this->saveConfig()) {
-                    $this->telegram->sendMessage([
-                        'chat_id' => $this->chatId,
-                        'text' => 'ارسال خودکار اخبار متوقف شد!',
-                        'reply_markup' => $replyMarkup
-                    ]);
-                } else {
-                    $this->telegram->sendMessage([
-                        'chat_id' => $this->chatId,
-                        'text' => 'خطا در توقف!',
-                        'reply_markup' => $replyMarkup
-                    ]);
-                }
+                // در Render رایگان، ذخیره‌سازی غیرفعال است
+                $this->telegram->sendMessage([
+                    'chat_id' => $this->chatId,
+                    'text' => 'ارسال خودکار اخبار متوقف شد!',
+                    'reply_markup' => $replyMarkup
+                ]);
             } elseif ($text === 'تغییر فید') {
                 $this->telegram->sendMessage([
                     'chat_id' => $this->chatId,
-                    'text' => "فید جدید رو اینجوری وارد کن (هر خط یه فید):\nنام: آدرس فید\nمثال:\nزومیت: https://www.zoomit.ir/rss\nبی‌بی‌سی: https://www.bbc.com/persian/index.xml\nخبرآنلاین: https://www.khabaronline.ir/rss\nتابناک: https://www.tabnak.ir/fa/rss/allnews\nایسنا: https://www.isna.ir/rss\n\nهشدار: فید جدید جایگزین فیدهای قبلی می‌شود!",
-                    'reply_markup' => json_encode(['force_reply' => true])
+                    'text' => "متأسفانه تغییر فید در پلن رایگان Render پشتیبانی نمی‌شود. فیدهای پیش‌فرض استفاده می‌شوند.",
+                    'reply_markup' => $replyMarkup
                 ]);
             } elseif (isset($message['reply_to_message']) && strpos($message['reply_to_message']['text'], 'فید جدید رو اینجوری وارد کن') !== false) {
-                $newFeedsText = $text;
-                $lines = explode("\n", $newFeedsText);
-                $newFeeds = [];
-
-                foreach ($lines as $line) {
-                    if (strpos($line, ':') !== false) {
-                        [$name, $url] = array_map('trim', explode(':', $line, 2));
-                        if (filter_var($url, FILTER_VALIDATE_URL)) {
-                            $newFeeds[$name] = $url;
-                        }
-                    }
-                }
-
-                if (!empty($newFeeds)) {
-                    $this->config['feeds'] = $newFeeds;
-                    if ($this->saveConfig()) {
-                        $feedList = implode("\n", array_map(function ($name, $url) {
-                            return "🦗 $name: " . htmlspecialchars($url, ENT_QUOTES, 'UTF-8');
-                        }, array_keys($newFeeds), $newFeeds));
-                        $this->telegram->sendMessage([
-                            'chat_id' => $this->chatId,
-                            'text' => "فیدهای قبلی پاک شد و فید جدید تنظیم شد:\n$feedList",
-                            'parse_mode' => 'HTML',
-                            'disable_web_page_preview' => true,
-                            'reply_markup' => $replyMarkup
-                        ]);
-                    } else {
-                        $this->telegram->sendMessage([
-                            'chat_id' => $this->chatId,
-                            'text' => 'خطا در ذخیره فیدها!',
-                            'reply_markup' => $replyMarkup
-                        ]);
-                    }
-                } else {
-                    $this->telegram->sendMessage([
-                        'chat_id' => $this->chatId,
-                        'text' => 'فید معتبر وارد کن!',
-                        'reply_markup' => $replyMarkup
-                    ]);
-                }
+                $this->telegram->sendMessage([
+                    'chat_id' => $this->chatId,
+                    'text' => 'تغییر فید در پلن رایگان Render پشتیبانی نمی‌شود.',
+                    'reply_markup' => $replyMarkup
+                ]);
             } elseif ($text === 'درباره') {
                 $this->telegram->sendMessage([
                     'chat_id' => $this->chatId,

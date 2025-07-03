@@ -7,43 +7,41 @@ use Illuminate\Support\Facades\Http;
 use Morilog\Jalali\Jalalian;
 use Telegram\Bot\Api;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Cache;
 use Carbon\Carbon;
 
 class CheckFeedsController extends Controller
 {
     protected function fetchRssFeed($url)
-{
-    try {
-        Log::info("Fetching RSS feed: $url");
-        $response = Http::withOptions([
-            'timeout' => 20,
-            'verify' => false,
-            'user_agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        ])->get($url);
+    {
+        try {
+            Log::info("Fetching RSS feed: $url");
+            $response = Http::withOptions([
+                'timeout' => 20,
+                'verify' => false,
+                'user_agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            ])->get($url);
 
-        // لاگ کردن هدرها و کد وضعیت
-        Log::info("HTTP Status for $url: {$response->status()}");
-        Log::debug("Response headers for $url: " . json_encode($response->headers()));
+            Log::info("HTTP Status for $url: {$response->status()}");
+            Log::debug("Response headers for $url: " . json_encode($response->headers()));
 
-        if ($response->successful()) {
-            Log::info("Successfully fetched feed $url, parsing XML");
-            $xml = @simplexml_load_string($response->body(), 'SimpleXMLElement', LIBXML_NOCDATA | LIBXML_NOERROR);
-            if ($xml !== false && isset($xml->channel->item)) {
-                Log::info("Successfully parsed RSS feed for $url, found " . count($xml->channel->item) . " items");
-                return $xml;
+            if ($response->successful()) {
+                Log::info("Successfully fetched feed $url, parsing XML");
+                $xml = @simplexml_load_string($response->body(), 'SimpleXMLElement', LIBXML_NOCDATA | LIBXML_NOERROR);
+                if ($xml !== false && isset($xml->channel->item)) {
+                    Log::info("Successfully parsed RSS feed for $url, found " . count($xml->channel->item) . " items");
+                    return $xml;
+                }
+                Log::error("Invalid RSS XML or no items for $url, raw response: " . substr($response->body(), 0, 500));
+                return false;
+            } else {
+                Log::error("HTTP error fetching RSS feed $url: HTTP {$response->status()}, response: " . substr($response->body(), 0, 500));
+                return false;
             }
-            Log::error("Invalid RSS XML or no items for $url, raw response: " . substr($response->body(), 0, 500));
-            return false;
-        } else {
-            Log::error("HTTP error fetching RSS feed $url: HTTP {$response->status()}, response: " . substr($response->body(), 0, 500));
+        } catch (\Exception $e) {
+            Log::error("Error fetching RSS feed $url: {$e->getMessage()}, Trace: {$e->getTraceAsString()}");
             return false;
         }
-    } catch (\Exception $e) {
-        Log::error("Error fetching RSS feed $url: {$e->getMessage()}, Trace: {$e->getTraceAsString()}");
-        return false;
     }
-}
 
     public function check(Request $request)
     {
@@ -66,7 +64,7 @@ class CheckFeedsController extends Controller
                 Log::info("Processing feed: $name ($url)");
                 $feed = $this->fetchRssFeed($url);
                 if ($feed && isset($feed->channel->item)) {
-                    $items = array_slice((array) $feed->channel->item, 0, 1); // محدود به 1 آیتم
+                    $items = array_slice((array) $feed->channel->item, 0, 3);
                     foreach ($items as $item) {
                         try {
                             $title = (string) ($item->title ?? 'بدون عنوان');
