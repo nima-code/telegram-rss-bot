@@ -89,9 +89,10 @@ class TelegramHandler
     public function handleMessage($message)
     {
         try {
+            Log::info("Received Telegram message for chat_id {$this->chatId}: " . json_encode($message));
             $text = isset($message['text']) ? $message['text'] : '';
             $replyMarkup = json_encode($this->getReplyMarkup());
-
+            
             if ($text === '/start') {
                 $this->telegram->sendMessage([
                     'chat_id' => $this->chatId,
