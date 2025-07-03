@@ -26,6 +26,7 @@ class TelegramHandler
     {
         try {
             $directory = storage_path('app');
+            Log::info("Checking storage directory: $directory");
             if (!is_dir($directory)) {
                 Log::info("Creating directory: $directory");
                 mkdir($directory, 0755, true);
@@ -33,8 +34,12 @@ class TelegramHandler
                 chgrp($directory, 'www-data');
             }
             if (!is_writable($directory)) {
-                Log::warning("Directory not writable: $directory");
+                Log::warning("Directory not writable: $directory, attempting to fix");
                 chmod($directory, 0755);
+                if (!is_writable($directory)) {
+                    Log::error("Failed to make directory writable: $directory");
+                    throw new \Exception("Storage directory is not writable");
+                }
             }
 
             if (file_exists($this->configFile)) {
@@ -95,8 +100,12 @@ class TelegramHandler
                 chgrp($directory, 'www-data');
             }
             if (!is_writable($directory)) {
-                Log::warning("Directory not writable: $directory");
+                Log::warning("Directory not writable: $directory, attempting to fix");
                 chmod($directory, 0755);
+                if (!is_writable($directory)) {
+                    Log::error("Failed to make directory writable: $directory");
+                    return false;
+                }
             }
             file_put_contents($this->configFile, json_encode($config ?? $this->config, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
             Log::info("Successfully saved feeds_config_{$this->chatId}.json");
@@ -175,7 +184,7 @@ class TelegramHandler
                         'reply_markup' => $replyMarkup
                     ]);
                 } catch (\Exception $e) {
-                    Log::error("Error calling /check-feeds for chat_id {$this->chatId}: {$e->getMessage()}");
+                    Log::error("Error calling /check-feeds for chat_id {$this->chatId}: {$e->getMessage()}, Trace: {$e->getTraceAsString()}");
                     $this->telegram->sendMessage([
                         'chat_id' => $this->chatId,
                         'text' => 'خطا در دریافت اخبار: ' . $e->getMessage(),
@@ -284,7 +293,7 @@ class TelegramHandler
                 ]);
             }
         } catch (\Exception $e) {
-            Log::error("Error handling message for chat_id {$this->chatId}: {$e->getMessage()}");
+            Log::error("Error handling message for chat_id {$this->chatId}: {$e->getMessage()}, Trace: {$e->getTraceAsString()}");
             $this->telegram->sendMessage([
                 'chat_id' => $this->chatId,
                 'text' => 'خطا: ' . $e->getMessage(),

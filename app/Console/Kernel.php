@@ -14,7 +14,6 @@ class Kernel extends ConsoleKernel
 
     protected function schedule($schedule)
     {
-        // Schedule غیرفعال شده برای پلن رایگان Render
         Log::info('Scheduling is disabled on Render free plan');
         return;
     }
