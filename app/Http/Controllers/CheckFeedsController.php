@@ -13,42 +13,37 @@ use Carbon\Carbon;
 class CheckFeedsController extends Controller
 {
     protected function fetchRssFeed($url)
-    {
-        try {
-            // استفاده از کش برای کاهش درخواست‌ها
-            $cacheKey = 'rss_feed_' . md5($url);
-            $cachedFeed = Cache::get($cacheKey);
-            if ($cachedFeed) {
-                Log::info("Returning cached RSS feed for $url");
-                return $cachedFeed;
-            }
+{
+    try {
+        Log::info("Fetching RSS feed: $url");
+        $response = Http::withOptions([
+            'timeout' => 20,
+            'verify' => false,
+            'user_agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        ])->get($url);
 
-            Log::info("Fetching RSS feed: $url");
-            $response = Http::withOptions([
-                'timeout' => 20,
-                'verify' => false,
-                'user_agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            ])->get($url);
+        // لاگ کردن هدرها و کد وضعیت
+        Log::info("HTTP Status for $url: {$response->status()}");
+        Log::debug("Response headers for $url: " . json_encode($response->headers()));
 
-            if ($response->successful()) {
-                Log::info("Successfully fetched feed $url, parsing XML");
-                $xml = @simplexml_load_string($response->body(), 'SimpleXMLElement', LIBXML_NOCDATA | LIBXML_NOERROR);
-                if ($xml !== false && isset($xml->channel->item)) {
-                    Log::info("Successfully parsed RSS feed for $url, found " . count($xml->channel->item) . " items");
-                    Cache::put($cacheKey, $xml, now()->addMinutes(15)); // کش برای 15 دقیقه
-                    return $xml;
-                }
-                Log::error("Invalid RSS XML or no items for $url, raw response: " . substr($response->body(), 0, 500));
-                return false;
-            } else {
-                Log::error("HTTP error fetching RSS feed $url: HTTP {$response->status()}, response: " . substr($response->body(), 0, 500));
-                return false;
+        if ($response->successful()) {
+            Log::info("Successfully fetched feed $url, parsing XML");
+            $xml = @simplexml_load_string($response->body(), 'SimpleXMLElement', LIBXML_NOCDATA | LIBXML_NOERROR);
+            if ($xml !== false && isset($xml->channel->item)) {
+                Log::info("Successfully parsed RSS feed for $url, found " . count($xml->channel->item) . " items");
+                return $xml;
             }
-        } catch (\Exception $e) {
-            Log::error("Error fetching RSS feed $url: {$e->getMessage()}, Trace: {$e->getTraceAsString()}");
+            Log::error("Invalid RSS XML or no items for $url, raw response: " . substr($response->body(), 0, 500));
+            return false;
+        } else {
+            Log::error("HTTP error fetching RSS feed $url: HTTP {$response->status()}, response: " . substr($response->body(), 0, 500));
             return false;
         }
+    } catch (\Exception $e) {
+        Log::error("Error fetching RSS feed $url: {$e->getMessage()}, Trace: {$e->getTraceAsString()}");
+        return false;
     }
+}
 
     public function check(Request $request)
     {
