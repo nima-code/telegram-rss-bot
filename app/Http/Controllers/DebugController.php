@@ -11,7 +11,7 @@ class DebugController extends Controller
     public function debugFeed(Request $request)
     {
         try {
-            $url = $request->query('url', 'https://www.isna.ir/rss');
+            $url = $request->query('url', 'https://www.khabaronline.ir/rss');
             Log::info("Starting debug for RSS feed: $url");
 
             // چک کردن پیش‌نیازها
@@ -26,6 +26,7 @@ class DebugController extends Controller
 
             // چک کردن دایرکتوری storage
             $directory = storage_path('app');
+            Log::info("Checking storage directory: $directory");
             if (!is_dir($directory)) {
                 Log::info("Creating directory: $directory");
                 mkdir($directory, 0755, true);
@@ -33,7 +34,7 @@ class DebugController extends Controller
                 chgrp($directory, 'www-data');
             }
             if (!is_writable($directory)) {
-                Log::warning("Directory not writable: $directory");
+                Log::warning("Directory not writable: $directory, attempting to fix");
                 chmod($directory, 0755);
                 if (!is_writable($directory)) {
                     Log::error("Failed to make directory writable: $directory");
@@ -45,13 +46,17 @@ class DebugController extends Controller
                 }
             }
 
-            // ارسال درخواست HTTP
+            // ارسال درخواست HTTP با لاگ دقیق‌تر
             Log::info("Sending HTTP request to: $url");
             $response = Http::withOptions([
                 'timeout' => 20,
                 'verify' => false,
                 'user_agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             ])->get($url);
+
+            // لاگ اطلاعات درخواست
+            Log::info("HTTP response status for $url: {$response->status()}");
+            Log::debug("HTTP response headers for $url: " . json_encode($response->headers()));
 
             // مدیریت ریدایرکت
             if ($response->status() === 301 || $response->status() === 302) {
@@ -62,6 +67,7 @@ class DebugController extends Controller
                     'verify' => false,
                     'user_agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
                 ])->get($newUrl);
+                Log::info("HTTP response status for redirected $newUrl: {$response->status()}");
                 $url = $newUrl;
             }
 

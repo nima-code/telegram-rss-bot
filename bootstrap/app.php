@@ -38,12 +38,17 @@ $app->register(App\Providers\AppServiceProvider::class);
 $app->register(App\Providers\AuthServiceProvider::class);
 $app->register(App\Providers\EventServiceProvider::class);
 $app->register(Illuminate\Routing\RoutingServiceProvider::class);
+$app->register(Telegram\Bot\Laravel\TelegramServiceProvider::class); // اضافه کردن برای تلگرام
 
 // ثبت مسیرهای روت
 $app->router->group([
     'namespace' => 'App\Http\Controllers',
 ], function ($router) {
+    // لود روت‌های موجود از web.php
     require __DIR__.'/../routes/web.php';
+    
+    // روت وب‌هوک برای تلگرام
+    $router->post('/webhook/telegram/{token}', 'TelegramHandlerController@handleWebhook');
 });
 
 // فعال کردن لاگ

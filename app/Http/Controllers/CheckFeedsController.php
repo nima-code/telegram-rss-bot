@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\Http;
 use Morilog\Jalali\Jalalian;
 use Telegram\Bot\Api;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Cache;
 use Carbon\Carbon;
 
 class CheckFeedsController extends Controller
@@ -14,20 +15,27 @@ class CheckFeedsController extends Controller
     protected function fetchRssFeed($url)
     {
         try {
+            // استفاده از کش برای کاهش درخواست‌ها
+            $cacheKey = 'rss_feed_' . md5($url);
+            $cachedFeed = Cache::get($cacheKey);
+            if ($cachedFeed) {
+                Log::info("Returning cached RSS feed for $url");
+                return $cachedFeed;
+            }
+
             Log::info("Fetching RSS feed: $url");
             $response = Http::withOptions([
-                'timeout' => 10,
+                'timeout' => 20,
                 'verify' => false,
-                'user_agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36'
+                'user_agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             ])->get($url);
-
-            Log::info("Raw RSS response for $url: " . substr($response->body(), 0, 1000));
 
             if ($response->successful()) {
                 Log::info("Successfully fetched feed $url, parsing XML");
-                $xml = @simplexml_load_string($response->body(), 'SimpleXMLElement', LIBXML_NOCDATA);
+                $xml = @simplexml_load_string($response->body(), 'SimpleXMLElement', LIBXML_NOCDATA | LIBXML_NOERROR);
                 if ($xml !== false && isset($xml->channel->item)) {
                     Log::info("Successfully parsed RSS feed for $url, found " . count($xml->channel->item) . " items");
+                    Cache::put($cacheKey, $xml, now()->addMinutes(15)); // کش برای 15 دقیقه
                     return $xml;
                 }
                 Log::error("Invalid RSS XML or no items for $url, raw response: " . substr($response->body(), 0, 500));
@@ -52,10 +60,8 @@ class CheckFeedsController extends Controller
             }
             Log::info("Starting check-feeds for chat_id: $chatId");
 
-            $feeds = [
-                'خبرآنلاین' => 'https://www.khabaronline.ir/rss',
-                'ایسنا' => 'https://www.isna.ir/rss'
-            ];
+            // فقط فید خبرآنلاین
+            $feeds = ['خبرآنلاین' => 'https://www.khabaronline.ir/rss'];
 
             $telegram = new Api(env('TELEGRAM_BOT_TOKEN'));
             $results = [];
@@ -65,7 +71,7 @@ class CheckFeedsController extends Controller
                 Log::info("Processing feed: $name ($url)");
                 $feed = $this->fetchRssFeed($url);
                 if ($feed && isset($feed->channel->item)) {
-                    $items = array_slice((array) $feed->channel->item, 0, 1);
+                    $items = array_slice((array) $feed->channel->item, 0, 1); // محدود به 1 آیتم
                     foreach ($items as $item) {
                         try {
                             $title = (string) ($item->title ?? 'بدون عنوان');
