@@ -1,11 +1,7 @@
 <?php
-
-namespace App\Services;
-
-use Illuminate\Http\Request;
-use Telegram\Bot\Api;
+namespace App;
 use Illuminate\Support\Facades\Log;
-use App\Http\Controllers\CheckFeedsController;
+use Telegram\Bot\Api;
 
 class TelegramHandler
 {
@@ -13,172 +9,149 @@ class TelegramHandler
     protected $chatId;
     protected $config;
 
-    public function __construct(Api $telegram, string $chatId)
+    public function __construct(Api $telegram, $chatId)
     {
         $this->telegram = $telegram;
         $this->chatId = $chatId;
-        $this->config = $this->loadConfig();
-        Log::info("Initialized TelegramHandler for chat_id: {$this->chatId}");
+        $this->getConfig();
     }
 
-    protected function loadConfig()
+    protected function getConfig()
     {
-        try {
-            Log::info("Loading feeds for chat_id {$this->chatId}");
-            $config = [
-                'feeds' => ['خبرآنلاین' => 'https://www.khabaronline.ir/rss'],
-                'auto_send' => true
-            ];
-            Log::info("Loaded config for chat_id {$this->chatId}: " . json_encode($config));
-            return $config;
-        } catch (\Exception $e) {
-            Log::error("Error loading config for chat_id {$this->chatId}: {$e->getMessage()}, Trace: {$e->getTraceAsString()}");
-            return [
-                'feeds' => ['خبرآنلاین' => 'https://www.khabaronline.ir/rss'],
-                'auto_send' => true
-            ];
+        $envKey = 'FEEDS_CONFIG_' . $this->chatId;
+        $configJson = env($envKey, json_encode(['feeds' => [], 'auto_send' => true]));
+        $this->config = json_decode($configJson, true);
+        if ($this->config === null) {
+            $this->config = ['feeds' => [], 'auto_send' => true];
         }
     }
 
-    protected function saveConfig($config = null)
+    protected function saveConfig()
     {
-        Log::info("Config saving is disabled in Render free plan for chat_id {$this->chatId}");
+        Log::info("Saving config for chat_id {$this->chatId}: " . json_encode($this->config));
+        file_put_contents('php://stderr', "Set env FEEDS_CONFIG_{$this->chatId}=" . json_encode($this->config, JSON_UNESCAPED_UNICODE) . "\n");
         return true;
-    }
-
-    protected function getReplyMarkup()
-    {
-        return [
-            'keyboard' => [
-                ['دریافت اخبار', 'نمایش فیدها'],
-                ['شروع فیدها', 'توقف'],
-                ['درباره']
-            ],
-            'resize_keyboard' => true,
-            'one_time_keyboard' => false
-        ];
     }
 
     public function handleMessage($message)
     {
         try {
-            Log::info("Received Telegram message for chat_id {$this->chatId}: " . json_encode($message));
-            $text = isset($message['text']) ? $message['text'] : '';
-            $replyMarkup = json_encode($this->getReplyMarkup());
+            $text = $message['text'] ?? '';
+            $replyMarkup = [
+                'keyboard' => [
+                    [['text' => 'دریافت اخبار'], ['text' => 'نمایش فیدها']],
+                    [['text' => 'شروع فیدها'], ['text' => 'توقف']],
+                    [['text' => 'تغییر فید'], ['text' => 'درباره']],
+                ],
+                'resize_keyboard' => true
+            ];
 
             if ($text === '/start') {
                 $this->telegram->sendMessage([
                     'chat_id' => $this->chatId,
-                    'text' => 'به بات خوش اومدی! اخبار رو با دکمه‌ها مدیریت کن. فید پیش‌فرض: خبرآنلاین.',
-                    'reply_markup' => $replyMarkup
+                    'text' => 'به ربات خوش آمدید! لطفاً یکی از گزینه‌های زیر را انتخاب کنید:',
+                    'reply_markup' => json_encode($replyMarkup)
                 ]);
             } elseif ($text === 'دریافت اخبار') {
                 $this->telegram->sendMessage([
                     'chat_id' => $this->chatId,
                     'text' => 'چک کردن اخبار جدید...'
                 ]);
-
-                try {
-                    Log::info("Calling /check-feeds for chat_id {$this->chatId}");
-                    $controller = new CheckFeedsController();
-                    $request = Request::create('/check-feeds?chat_id=' . $this->chatId, 'GET');
-                    $response = $controller->check($request);
-                    $statusCode = $response->getStatusCode();
-                    $content = $response->getContent();
-                    Log::info("Check-feeds response for chat_id {$this->chatId}: Status {$statusCode}, Content: {$content}");
-
-                    if ($statusCode !== 200) {
-                        Log::error("Non-200 response from /check-feeds for chat_id {$this->chatId}: Status {$statusCode}");
-                        $this->telegram->sendMessage([
-                            'chat_id' => $this->chatId,
-                            'text' => "خطا: سرور پاسخ {$statusCode} داد",
-                            'reply_markup' => $replyMarkup
-                        ]);
-                        return;
-                    }
-
-                    if (empty($content)) {
-                        Log::error("Empty response from /check-feeds for chat_id {$this->chatId}");
-                        $this->telegram->sendMessage([
-                            'chat_id' => $this->chatId,
-                            'text' => 'خطا: پاسخ سرور خالی است',
-                            'reply_markup' => $replyMarkup
-                        ]);
-                        return;
-                    }
-
-                    $results = json_decode($content, true);
-                    if ($results === null) {
-                        Log::error("Invalid JSON response from /check-feeds for chat_id {$this->chatId}: {$content}");
-                        $this->telegram->sendMessage([
-                            'chat_id' => $this->chatId,
-                            'text' => 'خطا: پاسخ سرور نامعتبر است',
-                            'reply_markup' => $replyMarkup
-                        ]);
-                        return;
-                    }
-
-                    $message = isset($results['message']) ? $results['message'] : 
-                               (isset($results['error']) ? $results['error'] : 'خطای ناشناخته');
-
+                $controller = new \App\Http\Controllers\CheckFeedsController();
+                $request = \Illuminate\Http\Request::create('/check-feeds?chat_id=' . $this->chatId, 'GET');
+                $response = $controller->check($request);
+                $this->telegram->sendMessage([
+                    'chat_id' => $this->chatId,
+                    'text' => $response->getData()->message
+                ]);
+            } elseif ($text === 'نمایش فیدها') {
+                $feeds = $this->config['feeds'] ?? [];
+                if (empty($feeds)) {
                     $this->telegram->sendMessage([
                         'chat_id' => $this->chatId,
-                        'text' => $message,
-                        'reply_markup' => $replyMarkup
+                        'text' => 'هیچ فیدی تنظیم نشده است.'
                     ]);
-                } catch (\Exception $e) {
-                    Log::error("Error calling /check-feeds for chat_id {$this->chatId}: {$e->getMessage()}, Trace: {$e->getTraceAsString()}");
+                } else {
+                    $feedList = implode("\n", array_map(function ($name, $url) {
+                        return "$name: $url";
+                    }, array_keys($feeds), $feeds));
                     $this->telegram->sendMessage([
                         'chat_id' => $this->chatId,
-                        'text' => 'خطا در دریافت اخبار: ' . $e->getMessage(),
-                        'reply_markup' => $replyMarkup
+                        'text' => "فیدهای تنظیم‌شده:\n$feedList"
                     ]);
                 }
-            } elseif ($text === 'نمایش فیدها') {
-                $feedList = !empty($this->config['feeds']) ? implode("\n", array_map(function ($name, $url) {
-                    return "🦗 $name: " . htmlspecialchars($url, ENT_QUOTES, 'UTF-8');
-                }, array_keys($this->config['feeds']), $this->config['feeds'])) : 'هیچ فیدی نیست!';
-                $this->telegram->sendMessage([
-                    'chat_id' => $this->chatId,
-                    'text' => "فید‌های فعال:\n$feedList",
-                    'parse_mode' => 'HTML',
-                    'disable_web_page_preview' => true,
-                    'reply_markup' => $replyMarkup
-                ]);
             } elseif ($text === 'شروع فیدها') {
                 $this->config['auto_send'] = true;
-                $this->telegram->sendMessage([
-                    'chat_id' => $this->chatId,
-                    'text' => 'ارسال خودکار اخبار فعال شد! هر ۱۵ دقیقه اخبار جدید میاد.',
-                    'reply_markup' => $replyMarkup
-                ]);
+                if ($this->saveConfig()) {
+                    $this->telegram->sendMessage([
+                        'chat_id' => $this->chatId,
+                        'text' => 'ارسال خودکار اخبار فعال شد! هر ۱۵ دقیقه اخبار جدید میاد.',
+                        'reply_markup' => json_encode($replyMarkup)
+                    ]);
+                } else {
+                    $this->telegram->sendMessage([
+                        'chat_id' => $this->chatId,
+                        'text' => 'خطا در فعال‌سازی ارسال خودکار.'
+                    ]);
+                }
             } elseif ($text === 'توقف') {
                 $this->config['auto_send'] = false;
+                if ($this->saveConfig()) {
+                    $this->telegram->sendMessage([
+                        'chat_id' => $this->chatId,
+                        'text' => 'ارسال خودکار اخبار غیرفعال شد.',
+                        'reply_markup' => json_encode($replyMarkup)
+                    ]);
+                } else {
+                    $this->telegram->sendMessage([
+                        'chat_id' => $this->chatId,
+                        'text' => 'خطا در غیرفعال‌سازی ارسال خودکار.'
+                    ]);
+                }
+            } elseif ($text === 'تغییر فید') {
                 $this->telegram->sendMessage([
                     'chat_id' => $this->chatId,
-                    'text' => 'ارسال خودکار اخبار متوقف شد!',
-                    'reply_markup' => $replyMarkup
+                    'text' => 'لطفاً فید جدید را با فرمت زیر وارد کنید: نام:آدرس\nمثال: خبرآنلاین:https://www.khabaronline.ir/rss'
                 ]);
             } elseif ($text === 'درباره') {
                 $this->telegram->sendMessage([
                     'chat_id' => $this->chatId,
-                    'text' => 'این بات اخبار رو از فید خبرآنلاین جمع می‌کنه و می‌فرسته.',
-                    'reply_markup' => $replyMarkup
+                    'text' => 'ربات RSS برای دریافت اخبار از فیدهای RSS. ساخته‌شده با Lumen.'
                 ]);
+            } elseif (strpos($text, ':') !== false) {
+                [$name, $url] = explode(':', $text, 2);
+                $name = trim($name);
+                $url = trim($url);
+                if (filter_var($url, FILTER_VALIDATE_URL)) {
+                    $this->config['feeds'][$name] = $url;
+                    if ($this->saveConfig()) {
+                        $this->telegram->sendMessage([
+                            'chat_id' => $this->chatId,
+                            'text' => "فید '$name' اضافه شد.",
+                            'reply_markup' => json_encode($replyMarkup)
+                        ]);
+                    } else {
+                        $this->telegram->sendMessage([
+                            'chat_id' => $this->chatId,
+                            'text' => 'خطا در افزودن فید.'
+                        ]);
+                    }
+                } else {
+                    $this->telegram->sendMessage([
+                        'chat_id' => $this->chatId,
+                        'text' => 'آدرس فید نامعتبر است.'
+                    ]);
+                }
             } else {
                 $this->telegram->sendMessage([
                     'chat_id' => $this->chatId,
-                    'text' => 'دستور نامعتبر! از دکمه‌ها استفاده کن.',
-                    'reply_markup' => $replyMarkup
+                    'text' => 'دستور ناشناخته! لطفاً از گزینه‌های زیر استفاده کنید:',
+                    'reply_markup' => json_encode($replyMarkup)
                 ]);
             }
         } catch (\Exception $e) {
-            Log::error("Error handling message for chat_id {$this->chatId}: {$e->getMessage()}, Trace: {$e->getTraceAsString()}");
-            $this->telegram->sendMessage([
-                'chat_id' => $this->chatId,
-                'text' => 'خطا: ' . $e->getMessage(),
-                'reply_markup' => $replyMarkup
-            ]);
+            Log::error("Error handling message for chat_id {$this->chatId}: {$e->getMessage()}");
         }
     }
 }
+?>
