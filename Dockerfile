@@ -19,12 +19,14 @@ COPY . /app
 RUN composer install --no-dev --optimize-autoloader
 
 # ساخت و تنظیم پرمیشن‌های پوشه‌ها
-RUN mkdir -p /app/storage/app /app/bootstrap/cache \
+RUN mkdir -p /app/storage/app /app/bootstrap/cache /etc/nginx/sites-enabled \
     && chown -R www-data:www-data /app/storage /app/bootstrap/cache \
-    && chmod -R 775 /app/storage /app/bootstrap/cache
+    && chmod -R 775 /app/storage /app/bootstrap/cache \
+    && chown -R www-data:www-data /etc/nginx/sites-enabled \
+    && chmod -R 775 /etc/nginx/sites-enabled
 
 # کپی فایل تنظیمات nginx
-COPY ./nginx.conf /etc/nginx/nginx.conf
+COPY ./nginx.conf /etc/nginx/sites-enabled/default
 
 # باز کردن پورت 80 برای nginx
 EXPOSE 80
