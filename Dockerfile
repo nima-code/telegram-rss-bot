@@ -1,12 +1,12 @@
 FROM php:8.2-fpm-alpine
 
-# نصب وابستگی‌ها
+# نصب وابستگی‌های ضروری
 RUN apk add --no-cache \
     nginx \
-    supervisor \
-    oniguruma-dev \
     libxml2-dev \
-    && docker-php-ext-install pdo mbstring xml simplexml dom \
+    oniguruma-dev \
+    curl \
+    && docker-php-ext-install mbstring xml simplexml dom \
     && curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
 
 # تنظیم دایرکتوری کاری
@@ -16,21 +16,18 @@ WORKDIR /app
 COPY . /app
 
 # نصب وابستگی‌های Composer
-RUN composer install --no-dev --optimize-autoloader || { echo "Composer install failed"; exit 1; }
+RUN composer install --no-dev --optimize-autoloader
 
-# ایجاد دایرکتوری برای supervisord
-RUN mkdir -p /etc/supervisor/conf.d
+# ساخت و تنظیم پرمیشن‌های پوشه‌ها
+RUN mkdir -p /app/storage/app /app/bootstrap/cache \
+    && chown -R www-data:www-data /app/storage /app/bootstrap/cache \
+    && chmod -R 775 /app/storage /app/bootstrap/cache
 
-# کپی فایل‌های تنظیمات
-COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
-COPY docker/nginx.conf /etc/nginx/nginx.conf
-COPY entrypoint.sh /entrypoint.sh
+# کپی فایل تنظیمات nginx
+COPY ./nginx.conf /etc/nginx/nginx.conf
 
-# تنظیم پرمیشن برای entrypoint
-RUN chmod +x /entrypoint.sh
-
-# باز کردن پورت 80
+# باز کردن پورت 80 برای nginx
 EXPOSE 80
 
-# اجرای entrypoint
-CMD ["/entrypoint.sh"]
+# اجرای nginx و php-fpm
+CMD php-fpm -D && nginx -g "daemon off;"
