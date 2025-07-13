@@ -36,4 +36,4 @@ COPY ./supervisord.conf /etc/supervisord.conf
 EXPOSE 80
 
 # اجرای supervisor
-CMD ["/usr/bin/supervisord", "-c", "/etc/supervisord.conf"]
+CMD ["/bin/sh", "-c", "cat /tmp/telegram-webhook.log; /usr/bin/supervisord -c /etc/supervisord.conf"]
