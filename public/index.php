@@ -4,9 +4,10 @@ use Laravel\Lumen\Routing\Router;
 
 require __DIR__ . '/../vendor/autoload.php';
 
+// لود فایل .env با نسخه جدید phpdotenv
 try {
-    (new Dotenv\Dotenv(__DIR__ . '/../'))->load();
-} catch (Dotenv\Exception\InvalidPathException $e) {
+    \Dotenv\Dotenv::createImmutable(__DIR__ . '/../')->load();
+} catch (\Dotenv\Exception\InvalidPathException $e) {
     //
 }
 
