@@ -16,20 +16,27 @@ WORKDIR /app
 COPY . /app
 
 # نصب وابستگی‌های Composer
-RUN composer install --no-dev --optimize-autoloader
+RUN composer install --no-dev --optimize-autoloader || { echo "Composer install failed"; exit 1; }
 
 # ساخت و تنظیم پرمیشن‌های پوشه‌ها
-RUN mkdir -p /app/storage/app /app/bootstrap/cache /etc/nginx/sites-enabled \
-    && chown -R www-data:www-data /app/storage /app/bootstrap/cache \
-    && chmod -R 775 /app/storage /app/bootstrap/cache \
-    && chown -R www-data:www-data /etc/nginx/sites-enabled \
-    && chmod -R 775 /etc/nginx/sites-enabled
+RUN mkdir -p /app/public /app/routes /etc/nginx/sites-enabled /var/log/nginx \
+    && chown -R www-data:www-data /app/public /app/routes /etc/nginx/sites-enabled /var/log/nginx \
+    && chmod -R 775 /app/public /app/routes /etc/nginx/sites-enabled /var/log/nginx \
+    && ls -la /app/public /app/routes || { echo "Public or routes directory missing"; exit 1; } \
+    && test -f /app/public/index.php || { echo "index.php not found"; exit 1; } \
+    && test -f /app/vendor/autoload.php || { echo "vendor/autoload.php not found"; exit 1; } \
+    && echo "Checking nginx config" && nginx -t || { echo "nginx config test failed"; exit 1; }
 
 # کپی فایل تنظیمات nginx
 COPY ./nginx.conf /etc/nginx/sites-enabled/default
 
+# تنظیم لاگ php-fpm
+RUN touch /var/log/php-fpm.log \
+    && chown www-data:www-data /var/log/php-fpm.log \
+    && chmod 664 /var/log/php-fpm.log
+
 # باز کردن پورت 80 برای nginx
 EXPOSE 80
 
-# اجرای nginx و php-fpm
-CMD php-fpm -D && nginx -g "daemon off;"
+# اجرای nginx و php-fpm در فرمت JSON
+CMD ["/bin/sh", "-c", "php-fpm -D && nginx -g 'daemon off;'"]
