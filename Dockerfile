@@ -20,9 +20,9 @@ COPY . /app
 RUN composer install --no-dev --optimize-autoloader || { echo "Composer install failed"; exit 1; }
 
 # ساخت و تنظیم پرمیشن‌های پوشه‌ها
-RUN mkdir -p /app/public /app/routes /etc/nginx/sites-enabled /var/log/nginx /var/log/supervisor /var/run \
-    && chown -R www-data:www-data /app/public /app/routes /etc/nginx/sites-enabled /var/log/nginx /var/log/supervisor /var/run \
-    && chmod -R 775 /app/public /app/routes /etc/nginx/sites-enabled /var/log/nginx /var/log/supervisor /var/run \
+RUN mkdir -p /app/public /app/routes /etc/nginx /var/log/nginx /var/log/supervisor /var/run /tmp \
+    && chown -R www-data:www-data /app/public /app/routes /etc/nginx /var/log/nginx /var/log/supervisor /var/run /tmp \
+    && chmod -R 775 /app/public /app/routes /etc/nginx /var/log/nginx /var/log/supervisor /var/run /tmp \
     && ls -la /app/public /app/routes || { echo "Public or routes directory missing"; exit 1; } \
     && test -f /app/public/index.php || { echo "index.php not found"; exit 1; } \
     && test -f /app/vendor/autoload.php || { echo "vendor/autoload.php not found"; exit 1; } \
