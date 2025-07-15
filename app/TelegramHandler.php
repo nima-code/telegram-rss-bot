@@ -167,7 +167,7 @@ class TelegramHandler
                 $this->saveConfig($this->config);
                 $this->telegram->sendMessage([
                     'chat_id' => $this->chatId,
-                    'text' => "ارسال خودکار اخبار فعال شد!\nلطفاً متغیر محیطی زیر رو تو Render اضافه کنید:\nFEEDS_CONFIG_{$this->chatId}=" . json_encode($this->config, JSON_UNESCAPED_UNICODE),
+                    'text' => "ارسال خودکار اخبار فعال شد!",
                     'reply_markup' => $replyMarkup
                 ]);
                 Log::info("Enabled auto-send for chat_id: {$this->chatId}");
