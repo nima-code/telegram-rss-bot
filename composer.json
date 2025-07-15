@@ -9,7 +9,10 @@
         "telegram-bot/api": "^2.3",
         "morilog/jalali": "^3.2",
         "irazasyed/telegram-bot-sdk": "^3.14",
-        "vlucas/phpdotenv": "5.5"
+        "vlucas/phpdotenv": "5.5",
+        "illuminate/filesystem": "^9.0",
+        "league/flysystem": "^3.0",
+        "guzzlehttp/guzzle": "^7.0"
     },
     "autoload": {
         "psr-4": {
