@@ -2,7 +2,6 @@
 namespace App;
 
 use Telegram\Bot\Api;
-use Telegram\Bot\FileUpload\InputFile;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use GuzzleHttp\Client;
@@ -25,7 +24,7 @@ class TelegramHandler
         $this->chatId = $chatId;
         $this->sentLinksFile = "feeds/sent_{$this->chatId}.json";
         $this->httpClient = new Client([
-            'timeout' => 20, // افزایش Timeout برای پایداری روی Render
+            'timeout' => 10, // کاهش Timeout برای بهینه‌سازی
             'headers' => [
                 'User-Agent' => 'Mozilla/5.0 (compatible; LumenRSSBot/1.0; +https://telegram-rss-bot-kmgj.onrender.com)'
             ]
@@ -199,7 +198,7 @@ class TelegramHandler
                     }
                 }
                 if (!empty($newFeeds)) {
-                    $this->config['feeds'] = $newFeeds; // جایگزینی به‌جای ادغام
+                    $this->config['feeds'] = $newFeeds;
                     $this->saveConfig($this->config);
                     $feedList = implode("\n", array_map(function ($name, $url) {
                         return "🦗 $name: " . htmlspecialchars($url, ENT_QUOTES, 'UTF-8');
@@ -321,15 +320,20 @@ class TelegramHandler
             $dateTime = new DateTime($pubDate, new DateTimeZone('GMT'));
             $dateTime->setTimezone(new DateTimeZone('Asia/Tehran'));
             $jalali = Jalalian::fromDateTime($dateTime);
-            return $jalali->format('l j F Y، H:i'); // مثلاً: سه‌شنبه ۲۵ تیر ۱۴۰۴، ۱۴:۳۸
+            return $jalali->format('l j F Y، H:i');
         } catch (\Exception $e) {
             Log::error("Failed to convert pubDate to Jalali: $pubDate", ['error' => $e->getMessage()]);
-            return $pubDate; // بازگشت به فرمت اصلی در صورت خطا
+            return $pubDate;
         }
     }
 
     protected function checkOpenGraphMetadata($url)
     {
+        if (!filter_var($url, FILTER_VALIDATE_URL) || $url === '#') {
+            Log::info("Skipping Open Graph metadata check for invalid URL: $url");
+            return ['hasOgImage' => false, 'hasOgTitle' => false, 'hasOgDescription' => false, 'statusCode' => null];
+        }
+
         try {
             $response = $this->httpClient->get($url);
             $statusCode = $response->getStatusCode();
@@ -379,7 +383,6 @@ class TelegramHandler
                 $response = $this->httpClient->get($url);
                 $xmlContent = $response->getBody()->getContents();
                 Log::debug("Fetched feed content for $name ($url)", ['length' => strlen($xmlContent)]);
-                Log::debug("Raw XML for $name ($url)", ['xml' => substr($xmlContent, 0, 2000)]);
 
                 $xml = @simplexml_load_string($xmlContent, 'SimpleXMLElement', LIBXML_NOCDATA);
                 if ($xml === false) {
@@ -399,7 +402,8 @@ class TelegramHandler
                     continue;
                 }
 
-                // لاگ کردن آیتم‌ها
+                // محدود کردن به ۱۰ آیتم اول برای بهینه‌سازی
+                $items = array_slice(iterator_to_array($items), 0, 10);
                 $itemCount = count($items);
                 Log::debug("Found $itemCount items in feed: $name ($url)", ['items' => array_map(function($item) use ($namespaces) {
                     return [
@@ -408,11 +412,11 @@ class TelegramHandler
                         'pubDate' => (string)$item->pubDate ?? null,
                         'image' => isset($item->enclosure) ? (string)$item->enclosure->attributes()->url : (isset($namespaces['media']) && $item->children($namespaces['media'])->content ? (string)$item->children($namespaces['media'])->content->attributes()->url : null)
                     ];
-                }, iterator_to_array($items))]);
+                }, $items)]);
 
                 // فیلتر آیتم‌های اخیر و غیرتکراری
                 $latestItems = [];
-                foreach (iterator_to_array($items, false) as $item) {
+                foreach ($items as $item) {
                     $link = $this->getFeedData($item, $namespaces, 'link', 'identifier');
                     $pubDate = $this->getFeedData($item, $namespaces, 'pubDate', 'date');
                     if ($this->isRecent($pubDate) && !in_array($link, $sentLinks)) {
