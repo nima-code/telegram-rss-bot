@@ -25,8 +25,10 @@ class TelegramHandler
         $this->chatId = $chatId;
         $this->sentLinksFile = "feeds/sent_{$this->chatId}.json";
         $this->httpClient = new Client([
-            'timeout' => 15,
-            'headers' => ['User-Agent' => 'Mozilla/5.0 (compatible; LumenRSSBot/1.0)']
+            'timeout' => 20, // افزایش Timeout برای پایداری روی Render
+            'headers' => [
+                'User-Agent' => 'Mozilla/5.0 (compatible; LumenRSSBot/1.0; +https://telegram-rss-bot-kmgj.onrender.com)'
+            ]
         ]);
         $this->loadConfig();
         $this->initializeSentLinks();
@@ -154,12 +156,18 @@ class TelegramHandler
                 Log::info("Sent feed list to chat_id: {$this->chatId}", ['feedList' => $feedList]);
             } elseif ($text === 'دریافت اخبار') {
                 $this->sendLatestNews($replyMarkup);
+                $this->telegram->sendMessage([
+                    'chat_id' => $this->chatId,
+                    'text' => 'اخبار فرستاده شد!',
+                    'reply_markup' => $replyMarkup
+                ]);
+                Log::info("Sent confirmation for news fetch for chat_id: {$this->chatId}");
             } elseif ($text === 'شروع فیدها') {
                 $this->config['auto_send'] = true;
                 $this->saveConfig($this->config);
                 $this->telegram->sendMessage([
                     'chat_id' => $this->chatId,
-                    'text' => "ارسال خودکار اخبار فعال شد! هر ۱۵ دقیقه اخبار جدید میاد.\nلطفاً متغیر محیطی زیر رو تو Render اضافه کنید:\nFEEDS_CONFIG_{$this->chatId}=" . json_encode($this->config, JSON_UNESCAPED_UNICODE),
+                    'text' => "ارسال خودکار اخبار فعال شد!\nلطفاً متغیر محیطی زیر رو تو Render اضافه کنید:\nFEEDS_CONFIG_{$this->chatId}=" . json_encode($this->config, JSON_UNESCAPED_UNICODE),
                     'reply_markup' => $replyMarkup
                 ]);
                 Log::info("Enabled auto-send for chat_id: {$this->chatId}");
@@ -324,22 +332,28 @@ class TelegramHandler
     {
         try {
             $response = $this->httpClient->get($url);
+            $statusCode = $response->getStatusCode();
             $html = $response->getBody()->getContents();
             $hasOgImage = preg_match('/<meta[^>]+property=["\']og:image["\'][^>]+content=["\'](.*?)["\']/i', $html, $ogImage);
             $hasOgTitle = preg_match('/<meta[^>]+property=["\']og:title["\'][^>]+content=["\'](.*?)["\']/i', $html, $ogTitle);
             $hasOgDescription = preg_match('/<meta[^>]+property=["\']og:description["\'][^>]+content=["\'](.*?)["\']/i', $html, $ogDescription);
             
             $result = [
-                'hasOgImage' => $hasOgImage && !empty($ogImage[1]),
+                'hasOgImage' => $hasOgImage && !empty($ogImage[1]) && filter_var($ogImage[1], FILTER_VALIDATE_URL),
                 'hasOgTitle' => $hasOgTitle && !empty($ogTitle[1]),
-                'hasOgDescription' => $hasOgDescription && !empty($ogDescription[1])
+                'hasOgDescription' => $hasOgDescription && !empty($ogDescription[1]),
+                'statusCode' => $statusCode
             ];
             
-            Log::debug("Checked Open Graph metadata for $url", $result);
+            Log::debug("Checked Open Graph metadata for $url", $result + ['ogImage' => $ogImage[1] ?? null]);
             return $result;
+        } catch (RequestException $e) {
+            $errorMsg = $e->hasResponse() ? $e->getResponse()->getStatusCode() . ' ' . $e->getResponse()->getReasonPhrase() : $e->getMessage();
+            Log::error("Failed to check Open Graph metadata for $url: $errorMsg", ['exception' => $e]);
+            return ['hasOgImage' => false, 'hasOgTitle' => false, 'hasOgDescription' => false, 'statusCode' => null];
         } catch (\Exception $e) {
-            Log::error("Failed to check Open Graph metadata for $url: {$e->getMessage()}");
-            return ['hasOgImage' => false, 'hasOgTitle' => false, 'hasOgDescription' => false];
+            Log::error("Unexpected error checking Open Graph metadata for $url: {$e->getMessage()}", ['exception' => $e]);
+            return ['hasOgImage' => false, 'hasOgTitle' => false, 'hasOgDescription' => false, 'statusCode' => null];
         }
     }
 
@@ -427,22 +441,11 @@ class TelegramHandler
                     $linkHtml = $link !== '#' ? "<a href=\"$link\">مشاهده خبر</a>" : 'بدون لینک';
                     $message = "📰 سایت: $name\n🗞️ عنوان: <b>$title</b>\n\n🕒 زمان انتشار: <i>$jalaliDate</i>\n\n🔗 $linkHtml";
 
-                    // چک کردن متادیتا برای Instant View
+                    // اضافه کردن تصویر به پیام اگه متادیتا ناقص باشه
                     $metadata = $this->checkOpenGraphMetadata($link);
                     $hasValidMetadata = $metadata['hasOgImage'] && $metadata['hasOgTitle'] && $metadata['hasOgDescription'];
-
-                    if (!$hasValidMetadata && $image) {
-                        // ارسال تصویر اگه متادیتا ناقص باشه
-                        try {
-                            $this->telegram->sendPhoto([
-                                'chat_id' => $this->chatId,
-                                'photo' => InputFile::create($image),
-                                'reply_markup' => $replyMarkup
-                            ]);
-                            Log::info("Sent image for news #$index: $title from $name for chat_id: {$this->chatId}", ['image' => $image]);
-                        } catch (\Exception $e) {
-                            Log::error("Failed to send photo for news #$index: $title from $name: {$e->getMessage()}");
-                        }
+                    if (!$hasValidMetadata && $image && filter_var($image, FILTER_VALIDATE_URL)) {
+                        $message .= "\n🖼️ <a href=\"$image\">تصویر خبر</a>";
                     }
 
                     try {
@@ -453,7 +456,7 @@ class TelegramHandler
                             'disable_web_page_preview' => false,
                             'reply_markup' => $replyMarkup
                         ]);
-                        Log::info("Sent news #$index: $title from $name for chat_id: {$this->chatId}", ['link' => $link, 'pubDate' => $pubDate, 'jalaliDate' => $jalaliDate]);
+                        Log::info("Sent news #$index: $title from $name for chat_id: {$this->chatId}", ['link' => $link, 'pubDate' => $pubDate, 'jalaliDate' => $jalaliDate, 'image' => $image]);
                         $this->saveSentLink($link);
                     } catch (\Exception $e) {
                         Log::error("Failed to send news #$index: $title from $name: {$e->getMessage()}");
