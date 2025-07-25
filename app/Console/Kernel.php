@@ -6,11 +6,13 @@ use Laravel\Lumen\Console\Kernel as ConsoleKernel;
 
 class Kernel extends ConsoleKernel
 {
-    protected $commands = [];
+    protected $commands = [
+        \App\Console\Commands\FeedWorker::class,
+    ];
 
     protected function schedule(Schedule $schedule)
     {
-        // خالی شده برای استفاده از Command جدید
+        // خالی برای استفاده از Command جدید
     }
 }
 ?>

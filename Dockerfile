@@ -11,19 +11,16 @@ RUN apk add --no-cache \
 
 WORKDIR /app
 COPY . /app
-RUN composer install --no-dev --optimize-autoloader || { echo "Composer install failed"; exit 1; }
+RUN composer install --no-dev --optimize-autoloader && composer dump-autoload || { echo "Composer install failed"; exit 1; }
 
-RUN mkdir -p /app/public /app/routes /etc/nginx /var/log/nginx /var/log/supervisor /var/run /app/storage /app/storage/logs /app/storage/feeds \
-    && chown -R www-data:www-data /app /var/log/nginx /var/log/supervisor /var/run \
-    && chmod -R 775 /app/storage /app/storage/logs /app/storage/feeds \
+RUN mkdir -p /app/public /app/routes /etc/nginx /var/log/nginx /var/log/supervisor /var/run /app/storage /app/storage/logs /app/storage/feeds /var/log/feed-worker \
+    && chown -R www-data:www-data /app /var/log/nginx /var/log/supervisor /var/run /var/log/feed-worker \
+    && chmod -R 775 /app/storage /app/storage/logs /app/storage/feeds /var/log/feed-worker \
     && touch /app/storage/logs/lumen-$(date +%Y-%m-%d).log \
     && chown www-data:www-data /app/storage/logs/lumen-$(date +%Y-%m-%d).log \
     && chmod 664 /app/storage/logs/lumen-$(date +%Y-%m-%d).log \
-    && mkdir -p /app/storage/feeds \
-    && chown -R www-data:www-data /app/storage/feeds \
-    && chmod -R 775 /app/storage/feeds \
     && touch /app/storage/feeds/test.json && rm /app/storage/feeds/test.json || { echo "Storage write test failed"; exit 1; } \
-    && (test -f /app/.env || { echo "Creating default .env"; echo -e "APP_NAME=LumenRSSBot\nAPP_ENV=local\nAPP_KEY=$(php -r 'echo base64_encode(random_bytes(32));')\nAPP_DEBUG=true\nTELEGRAM_BOT_TOKEN=7648771268:AAE4Hxioz8tTod0vmm8ajN4Pdz4ikQ0ktbg\nTELEGRAM_MODE=webhook" > /app/.env; }) \
+    && (test -f /app/.env || { echo -e "APP_NAME=LumenRSSBot\nAPP_ENV=local\nAPP_KEY=$(php -r 'echo base64_encode(random_bytes(32));')\nAPP_DEBUG=true\nTELEGRAM_BOT_TOKEN=7648771268:AAE4Hxioz8tTod0vmm8ajN4Pdz4ikQ0ktbg\nTELEGRAM_MODE=webhook" > /app/.env; }) \
     && test -f /app/public/index.php || { echo "index.php not found"; exit 1; } \
     && test -f /app/vendor/autoload.php || { echo "vendor/autoload.php not found"; exit 1; } \
     && nginx -t || { echo "nginx config test failed"; exit 1; }
