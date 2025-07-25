@@ -14,8 +14,8 @@ COPY . /app
 RUN composer install --no-dev --optimize-autoloader || { echo "Composer install failed"; exit 1; }
 
 RUN mkdir -p /app/public /app/routes /etc/nginx /var/log/nginx /var/log/supervisor /var/run /app/storage /app/storage/logs /app/storage/feeds \
-    && chown -R www-data:www-data /app/public /app/routes /etc/nginx /var/log/nginx /var/log/supervisor /var/run /app/storage /app/storage/logs /app/storage/feeds \
-    && chmod -R 775 /app/public /app/routes /etc/nginx /var/log/nginx /var/log/supervisor /var/run /app/storage /app/storage/logs /app/storage/feeds \
+    && chown -R www-data:www-data /app /var/log/nginx /var/log/supervisor /var/run \
+    && chmod -R 775 /app/storage /app/storage/logs /app/storage/feeds \
     && touch /app/storage/logs/lumen-$(date +%Y-%m-%d).log \
     && chown www-data:www-data /app/storage/logs/lumen-$(date +%Y-%m-%d).log \
     && chmod 664 /app/storage/logs/lumen-$(date +%Y-%m-%d).log \

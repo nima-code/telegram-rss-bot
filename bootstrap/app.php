@@ -1,25 +1,34 @@
 <?php
 require_once __DIR__ . '/../vendor/autoload.php';
 
-use Illuminate\Support\Facades\Log;
+use Dotenv\Dotenv;
 
 try {
-    (new Dotenv\Dotenv(__DIR__ . '/../'))->load();
-} catch (\Dotenv\Exception\InvalidPathException $e) {
-    Log::error('Failed to load .env file: ' . $e->getMessage());
+    // بارگذاری فایل .env با متد جدید
+    Dotenv::createImmutable(__DIR__ . '/..')->load();
+} catch (\Exception $e) {
+    die('Failed to load .env file: ' . $e->getMessage());
 }
 
 $app = new Laravel\Lumen\Application(
-    realpath(__DIR__ . '/../')
+    dirname(__DIR__)
 );
 
+// تنظیمات Lumen
 $app->withFacades();
+$app->withEloquent();
 
-$app->routeMiddleware([
-    'auth' => App\Http\Middleware\Authenticate::class,
-]);
+$app->singleton(
+    Illuminate\Contracts\Console\Kernel::class,
+    App\Console\Kernel::class
+);
 
-$app->register(App\Providers\AppServiceProvider::class);
+$app->singleton(
+    Illuminate\Contracts\Debug\ExceptionHandler::class,
+    App\Exceptions\Handler::class
+);
+
+$app->configure('app');
 
 $app->router->group(['namespace' => 'App\Http\Controllers'], function ($router) {
     require __DIR__ . '/../routes/web.php';
