@@ -19,17 +19,14 @@ RUN mkdir -p /app/public /app/routes /etc/nginx /var/log/nginx /var/log/supervis
     && touch /app/storage/logs/lumen-$(date +%Y-%m-%d).log \
     && chown www-data:www-data /app/storage/logs/lumen-$(date +%Y-%m-%d).log \
     && chmod 664 /app/storage/logs/lumen-$(date +%Y-%m-%d).log \
-    && echo "Creating feeds directory and setting permissions" \
     && mkdir -p /app/storage/feeds \
     && chown -R www-data:www-data /app/storage/feeds \
     && chmod -R 775 /app/storage/feeds \
-    && ls -la /app/storage /app/storage/feeds || { echo "Directory creation failed"; exit 1; } \
-    && echo "Checking storage permissions" \
     && touch /app/storage/feeds/test.json && rm /app/storage/feeds/test.json || { echo "Storage write test failed"; exit 1; } \
     && (test -f /app/.env || { echo "Creating default .env"; echo -e "APP_NAME=LumenRSSBot\nAPP_ENV=local\nAPP_KEY=$(php -r 'echo base64_encode(random_bytes(32));')\nAPP_DEBUG=true\nTELEGRAM_BOT_TOKEN=7648771268:AAE4Hxioz8tTod0vmm8ajN4Pdz4ikQ0ktbg\nTELEGRAM_MODE=webhook" > /app/.env; }) \
     && test -f /app/public/index.php || { echo "index.php not found"; exit 1; } \
     && test -f /app/vendor/autoload.php || { echo "vendor/autoload.php not found"; exit 1; } \
-    && echo "Checking nginx config" && nginx -t || { echo "nginx config test failed"; exit 1; }
+    && nginx -t || { echo "nginx config test failed"; exit 1; }
 
 COPY ./nginx.conf /etc/nginx/nginx.conf
 COPY ./supervisord.conf /etc/supervisord.conf

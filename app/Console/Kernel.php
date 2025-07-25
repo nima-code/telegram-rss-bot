@@ -10,9 +10,7 @@ class Kernel extends ConsoleKernel
 
     protected function schedule(Schedule $schedule)
     {
-        $schedule->call(function () {
-            \Illuminate\Support\Facades\Log::info('Cron job running');
-        })->everyFifteenMinutes();
+        // خالی شده برای استفاده از Command جدید
     }
 }
 ?>
