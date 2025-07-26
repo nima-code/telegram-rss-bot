@@ -5,6 +5,7 @@ use Telegram\Bot\Api;
 use Telegram\Bot\FileUpload\InputFile;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Cache;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\RequestException;
 use DateTime;
@@ -148,7 +149,7 @@ class TelegramHandler
                 $this->saveConfig($this->config);
                 $this->telegram->sendMessage([
                     'chat_id' => $this->chatId,
-                    'text' => "ارسال خودکار اخبار فعال شد! هر ۱۵ دقیقه اخبار جدید میاد.\nلطفاً متغیر محیطی زیر رو تو Render اضافه کنید:\nFEEDS_CONFIG_{$this->chatId}=" . json_encode($this->config, JSON_UNESCAPED_UNICODE),
+                    'text' => "ارسال خودکار اخبار فعال شد! هر ۱۰ دقیقه اخبار جدید میاد.\nلطفاً متغیر محیطی زیر رو تو Render اضافه کنید:\nFEEDS_CONFIG_{$this->chatId}=" . json_encode($this->config, JSON_UNESCAPED_UNICODE),
                     'reply_markup' => $replyMarkup
                 ]);
                 Log::info("Enabled auto-send for chat_id: {$this->chatId}");
@@ -216,11 +217,63 @@ class TelegramHandler
         }
     }
 
+    public function sendFeedItem($item, $name)
+    {
+        $lock = Cache::lock("feed_processing_{$this->chatId}", 10);
+        if ($lock->get()) {
+            try {
+                $sentLinks = $this->loadSentLinks();
+                $namespaces = ($item instanceof \SimpleXMLElement) ? $item->getNamespaces(true) : [];
+                $link = $this->getFeedData($item, $namespaces, 'link', 'identifier');
+                if (in_array($link, $sentLinks)) {
+                    return;
+                }
+                $title = $this->getFeedData($item, $namespaces, 'title', 'title');
+                $pubDate = $this->getFeedData($item, $namespaces, 'pubDate', 'date');
+                $image = $this->getFeedData($item, $namespaces, 'image');
+                $jalaliDate = $this->formatJalaliDate($pubDate);
+
+                $linkHtml = $link !== '#' ? "<a href=\"$link\">مشاهده خبر</a>" : 'بدون لینک';
+                $message = "📰 سایت: $name\n🗞️ عنوان: <b>$title</b>\n\n🕒 زمان انتشار: <i>$jalaliDate</i>\n\n🔗 $linkHtml";
+                if (!$this->checkOpenGraphMetadata($link)['hasOgImage'] && $image && filter_var($image, FILTER_VALIDATE_URL)) {
+                    $message .= "\n🖼️ <a href=\"$image\">تصویر خبر</a>";
+                }
+
+                $this->telegram->sendMessage([
+                    'chat_id' => $this->chatId,
+                    'text' => $message,
+                    'parse_mode' => 'HTML',
+                    'disable_web_page_preview' => false,
+                    'reply_markup' => json_encode($this->getReplyMarkup())
+                ]);
+                $this->saveSentLink($link);
+                Log::info("Sent feed item from $name for chat_id: {$this->chatId}");
+            } catch (\Exception $e) {
+                Log::error("Error sending feed item from $name for chat_id: {$this->chatId}: {$e->getMessage()}");
+            } finally {
+                $lock->release();
+            }
+        } else {
+            Log::info("Skipped sending feed item due to lock for chat_id: {$this->chatId}");
+        }
+    }
+
     public function checkAndSendFeeds()
     {
-        if ($this->config['auto_send'] === true) {
-            $replyMarkup = json_encode($this->getReplyMarkup());
-            $this->sendLatestNews($replyMarkup);
+        $lock = Cache::lock("feed_processing_{$this->chatId}", 10);
+        if ($lock->get()) {
+            try {
+                if ($this->config['auto_send'] === true) {
+                    $this->sendLatestNews(json_encode($this->getReplyMarkup()));
+                    Log::info("Checked and sent feeds for chat_id: {$this->chatId}");
+                }
+            } catch (\Exception $e) {
+                Log::error("Error checking feeds for chat_id: {$this->chatId}: {$e->getMessage()}");
+            } finally {
+                $lock->release();
+            }
+        } else {
+            Log::info("Skipped checking feeds due to lock for chat_id: {$this->chatId}");
         }
     }
 
@@ -361,7 +414,7 @@ class TelegramHandler
                     continue;
                 }
 
-                $items = array_slice(iterator_to_array($items), 0, 10);
+                $items = array_slice(iterator_to_array($items), 0, 8); // محدود به ۸ آیتم
                 $latestItems = [];
                 foreach ($items as $item) {
                     $link = $this->getFeedData($item, $namespaces, 'link', 'identifier');
@@ -379,26 +432,8 @@ class TelegramHandler
                 }
 
                 foreach ($latestItems as $item) {
-                    $title = $this->getFeedData($item, $namespaces, 'title', 'title');
-                    $link = $this->getFeedData($item, $namespaces, 'link', 'identifier');
-                    $pubDate = $this->getFeedData($item, $namespaces, 'pubDate', 'date');
-                    $image = $this->getFeedData($item, $namespaces, 'image');
-                    $jalaliDate = $this->formatJalaliDate($pubDate);
-
-                    $linkHtml = $link !== '#' ? "<a href=\"$link\">مشاهده خبر</a>" : 'بدون لینک';
-                    $message = "📰 سایت: $name\n🗞️ عنوان: <b>$title</b>\n\n🕒 زمان انتشار: <i>$jalaliDate</i>\n\n🔗 $linkHtml";
-                    if (!$this->checkOpenGraphMetadata($link)['hasOgImage'] && $image && filter_var($image, FILTER_VALIDATE_URL)) {
-                        $message .= "\n🖼️ <a href=\"$image\">تصویر خبر</a>";
-                    }
-
-                    $this->telegram->sendMessage([
-                        'chat_id' => $this->chatId,
-                        'text' => $message,
-                        'parse_mode' => 'HTML',
-                        'disable_web_page_preview' => false,
-                        'reply_markup' => $replyMarkup
-                    ]);
-                    $this->saveSentLink($link);
+                    $this->sendFeedItem($item, $name);
+                    sleep(3); // تأخیر ۳ ثانیه بین آیتم‌ها
                 }
             } catch (\Exception $e) {
                 Log::error("Error processing feed $name ($url) for chat_id: {$this->chatId}: {$e->getMessage()}");

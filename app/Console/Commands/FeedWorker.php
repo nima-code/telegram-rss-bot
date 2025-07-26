@@ -3,7 +3,9 @@ namespace App\Console\Commands;
 
 use Illuminate\Console\Command;
 use Telegram\Bot\Api;
-use App\Telegram\TelegramHandler;
+use App\TelegramHandler;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Cache;
 
 class FeedWorker extends Command
 {
@@ -18,7 +20,7 @@ class FeedWorker extends Command
     public function handle()
     {
         $telegram = new Api(env('TELEGRAM_BOT_TOKEN'));
-        \Log::info('FeedWorker started');
+        Log::info('FeedWorker started');
 
         while (true) {
             try {
@@ -31,17 +33,17 @@ class FeedWorker extends Command
                     try {
                         $handler = new TelegramHandler($telegram, $chatId);
                         $this->processSingleFeed($handler, $chatId);
-                        sleep(5); // تأخیر ۵ ثانیه بین هر چت
+                        sleep(7); // تأخیر ۷ ثانیه بین هر چت
                     } catch (\Exception $e) {
-                        \Log::error("Error in feed worker for chat_id: $chatId: {$e->getMessage()}");
+                        Log::error("Error in feed worker for chat_id: $chatId: {$e->getMessage()}");
                     }
                 }
             } catch (\Exception $e) {
-                \Log::error("General error in FeedWorker: {$e->getMessage()}");
+                Log::error("General error in FeedWorker: {$e->getMessage()}");
             }
 
-            // خواب طولانی‌تر برای کاهش مصرف منابع
-            sleep(600); // 10 دقیقه
+            Log::info('FeedWorker sleeping for 10 minutes');
+            sleep(600); // ۱۰ دقیقه
         }
     }
 
@@ -51,17 +53,22 @@ class FeedWorker extends Command
         if (!empty($config['feeds']) && !empty($config['auto_send'])) {
             foreach ($config['feeds'] as $name => $feedUrl) {
                 try {
-                    $feed = simplexml_load_file($feedUrl, null, LIBXML_NOCDATA);
-                    $items = array_slice($feed->channel->item, 0, 8); // محدود به ۸ آیتم
+                    $cacheKey = "feed_{$chatId}_{$name}";
+                    $feed = Cache::remember($cacheKey, 600, function () use ($feedUrl) {
+                        Log::info("Fetching feed: $feedUrl");
+                        $response = (new \GuzzleHttp\Client(['timeout' => 10]))->get($feedUrl);
+                        return simplexml_load_string($response->getBody()->getContents(), 'SimpleXMLElement', LIBXML_NOCDATA);
+                    });
+                    $items = array_slice($feed->channel->item ?? [], 0, 8); // محدود به ۸ آیتم
                     foreach ($items as $item) {
                         $handler->sendFeedItem($item, $name);
-                        sleep(2); // تأخیر ۲ ثانیه بین هر آیتم
+                        sleep(3); // تأخیر ۳ ثانیه بین هر آیتم
                     }
-                    \Log::info("Processed feed $name for chat_id: $chatId");
+                    Log::info("Processed feed $name for chat_id: $chatId");
+                    sleep(7); // تأخیر ۷ ثانیه بین هر فید
                 } catch (\Exception $e) {
-                    \Log::error("Failed to process feed $name for chat_id: $chatId: {$e->getMessage()}");
+                    Log::error("Failed to process feed $name for chat_id: $chatId: {$e->getMessage()}");
                 }
-                sleep(5); // تأخیر ۵ ثانیه بین هر فید
             }
         }
     }
