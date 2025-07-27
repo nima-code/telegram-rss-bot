@@ -7,7 +7,8 @@ RUN apk add --no-cache \
     curl \
     supervisor \
     && docker-php-ext-install mbstring xml simplexml dom \
-    && curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+    && curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer \
+    && curl -o /etc/ssl/certs/cacert.pem https://curl.se/ca/cacert.pem
 
 WORKDIR /app
 COPY . /app

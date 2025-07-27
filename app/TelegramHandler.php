@@ -35,7 +35,7 @@ class TelegramHandler
                 }
                 if ($exception instanceof RequestException) {
                     Log::info("Retrying request for chat_id: {$this->chatId}, attempt: " . ($retries + 1));
-                    sleep(2); // تأخیر ۲ ثانیه بین تلاش‌ها
+                    sleep(2); // تأخیر ۲ ثانیه
                     return true;
                 }
                 return false;
@@ -43,7 +43,8 @@ class TelegramHandler
         ));
 
         $this->httpClient = new Client([
-            'timeout' => 20, // افزایش تایم‌اوت به ۲۰ ثانیه
+            'timeout' => 20,
+            'verify' => false, // غیرفعال کردن تأیید SSL برای فیدهای مشکل‌دار
             'handler' => $handlerStack,
             'headers' => [
                 'User-Agent' => 'Mozilla/5.0 (compatible; LumenRSSBot/1.0; +https://telegram-rss-bot-kmgj.onrender.com)'
@@ -51,7 +52,7 @@ class TelegramHandler
         ]);
         $this->loadConfig();
         $this->initializeSentLinks();
-        Log::info("TelegramHandler initialized for chat_id: {$this->chatId}");
+        Log::warning("SSL verification disabled for HTTP requests. Consider updating CA bundle for security.", ['chat_id' => $this->chatId]);
     }
 
     protected function initializeSentLinks()
@@ -332,7 +333,7 @@ class TelegramHandler
             $pubDateTime = new DateTime($pubDate, new DateTimeZone('GMT'));
             $now = new DateTime('now', new DateTimeZone('GMT'));
             $interval = $now->getTimestamp() - $pubDateTime->getTimestamp();
-            return $interval <= 15 * 60; // 15 دقیقه
+            return $interval <= 60 * 60; // ۱ ساعت
         } catch (\Exception $e) {
             Log::error("Invalid pubDate format: $pubDate", ['error' => $e->getMessage()]);
             return false;
@@ -386,6 +387,47 @@ class TelegramHandler
         }
     }
 
+    public function testFeed($url)
+    {
+        try {
+            Log::info("Testing feed: $url for chat_id: {$this->chatId}");
+            $response = $this->httpClient->get($url);
+            $xmlContent = $response->getBody()->getContents();
+            $xml = @simplexml_load_string($xmlContent, 'SimpleXMLElement', LIBXML_NOCDATA | LIBXML_NOERROR | LIBXML_NOWARNING);
+            if ($xml === false) {
+                Log::error("Failed to parse XML for feed: $url for chat_id: {$this->chatId}");
+                return ['status' => 'error', 'message' => "Failed to parse XML for feed: $url"];
+            }
+
+            $namespaces = $xml->getNamespaces(true);
+            $items = $xml->channel->item ?? [];
+            $itemCount = count($items);
+            Log::info("Found $itemCount items in feed: $url for chat_id: {$this->chatId}");
+
+            $result = [
+                'status' => 'success',
+                'item_count' => $itemCount,
+                'items' => array_map(function($item) use ($namespaces) {
+                    return [
+                        'title' => $this->getFeedData($item, $namespaces, 'title', 'title'),
+                        'link' => $this->getFeedData($item, $namespaces, 'link', 'identifier'),
+                        'pubDate' => $this->getFeedData($item, $namespaces, 'pubDate', 'date'),
+                        'description' => $this->getFeedData($item, $namespaces, 'description'),
+                        'image' => $this->getFeedData($item, $namespaces, 'image')
+                    ];
+                }, array_slice(iterator_to_array($items), 0, 5)) // محدود به ۵ آیتم برای تست
+            ];
+            return $result;
+        } catch (RequestException $e) {
+            $errorMsg = $e->hasResponse() ? $e->getResponse()->getStatusCode() . ' ' . $e->getResponse()->getReasonPhrase() : $e->getMessage();
+            Log::error("Failed to load feed content: $url for chat_id: {$this->chatId}: $errorMsg");
+            return ['status' => 'error', 'message' => "Failed to load feed: $errorMsg"];
+        } catch (\Exception $e) {
+            Log::error("Error testing feed $url for chat_id: {$this->chatId}: {$e->getMessage()}");
+            return ['status' => 'error', 'message' => "Error testing feed: {$e->getMessage()}"];
+        }
+    }
+
     protected function sendLatestNews($replyMarkup)
     {
         Log::info("Processing sendLatestNews for chat_id: {$this->chatId}");
@@ -419,7 +461,7 @@ class TelegramHandler
                     Log::info("Fetched and cached feed content for $name ($url)", ['file' => $cacheFile, 'length' => strlen($xmlContent)]);
                 }
 
-                $xml = @simplexml_load_string($xmlContent, 'SimpleXMLElement', LIBXML_NOCDATA);
+                $xml = @simplexml_load_string($xmlContent, 'SimpleXMLElement', LIBXML_NOCDATA | LIBXML_NOERROR | LIBXML_NOWARNING);
                 if ($xml === false) {
                     $this->telegram->sendMessage([
                         'chat_id' => $this->chatId,
@@ -433,7 +475,12 @@ class TelegramHandler
                 $namespaces = $xml->getNamespaces(true);
                 $items = $xml->channel->item ?? [];
                 if (empty($items)) {
-                    Log::info("No items found in feed: $name ($url) for chat_id: {$this->chatId}");
+                    Log::warning("No items found in feed: $name ($url) for chat_id: {$this->chatId}");
+                    $this->telegram->sendMessage([
+                        'chat_id' => $this->chatId,
+                        'text' => "هیچ آیتمی در فید $name ($url) یافت نشد.",
+                        'reply_markup' => $replyMarkup
+                    ]);
                     continue;
                 }
 
@@ -445,6 +492,7 @@ class TelegramHandler
                         'title' => (string)$item->title ?? null,
                         'link' => (string)$item->link ?? null,
                         'pubDate' => (string)$item->pubDate ?? null,
+                        'description' => (string)$item->description ?? null,
                         'image' => isset($item->enclosure) ? (string)$item->enclosure->attributes()->url : (isset($namespaces['media']) && $item->children($namespaces['media'])->content ? (string)$item->children($namespaces['media'])->content->attributes()->url : null)
                     ];
                 }, $items)]);
@@ -468,6 +516,8 @@ class TelegramHandler
 
                 if (!empty($latestItems)) {
                     $hasNews = true;
+                } else {
+                    Log::info("No recent items found for feed: $name ($url) within 1 hour");
                 }
 
                 foreach ($latestItems as $index => $item) {
@@ -485,7 +535,6 @@ class TelegramHandler
                     $metadata = $this->checkOpenGraphMetadata($link);
                     $hasValidMetadata = $metadata['hasOgImage'] && $metadata['hasOgTitle'] && $metadata['hasOgDescription'];
                     if (!$hasValidMetadata) {
-                        // استفاده از داده‌های فید برای شبیه‌سازی Instant View
                         $message .= "\n\n📝 توضیحات: " . htmlspecialchars($description, ENT_QUOTES, 'UTF-8');
                         if ($image && filter_var($image, FILTER_VALIDATE_URL)) {
                             $message .= "\n\n🖼️ تصویر خبر: <a href=\"$image\">تصویر خبر</a>";
