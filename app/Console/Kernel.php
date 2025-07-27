@@ -6,13 +6,14 @@ use Laravel\Lumen\Console\Kernel as ConsoleKernel;
 
 class Kernel extends ConsoleKernel
 {
-    protected $commands = [
-        \App\Console\Commands\FeedWorker::class,
-    ];
+    protected $commands = [];
 
     protected function schedule(Schedule $schedule)
     {
-        // خالی برای استفاده از Command جدید
+        // Schedule غیرفعال شده چون تو پلن رایگان Render از Cron Job خارجی استفاده می‌کنیم
+        // $schedule->call(function () {
+        //     \Illuminate\Support\Facades\Log::info('Cron job running');
+        // })->everyFifteenMinutes();
     }
 }
 ?>
