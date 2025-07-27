@@ -24,7 +24,7 @@ class TelegramHandler
         $this->chatId = $chatId;
         $this->sentLinksFile = "feeds/sent_{$this->chatId}.json";
         $this->httpClient = new Client([
-            'timeout' => 10,
+            'timeout' => 10, // کاهش Timeout برای بهینه‌سازی
             'headers' => [
                 'User-Agent' => 'Mozilla/5.0 (compatible; LumenRSSBot/1.0; +https://telegram-rss-bot-kmgj.onrender.com)'
             ]
@@ -445,12 +445,11 @@ class TelegramHandler
                     $linkHtml = $link !== '#' ? "<a href=\"$link\">مشاهده خبر</a>" : 'بدون لینک';
                     $message = "📰 سایت: $name\n🗞️ عنوان: <b>$title</b>\n\n🕒 زمان انتشار: <i>$jalaliDate</i>\n\n🔗 $linkHtml";
 
-                    // اضافه کردن تصویر به انتهای پیام
+                    // اضافه کردن تصویر به پیام اگه متادیتا ناقص باشه
                     $metadata = $this->checkOpenGraphMetadata($link);
                     $hasValidMetadata = $metadata['hasOgImage'] && $metadata['hasOgTitle'] && $metadata['hasOgDescription'];
                     if (!$hasValidMetadata && $image && filter_var($image, FILTER_VALIDATE_URL)) {
-                        $message .= "\n\n🖼️ تصویر خبر: <a href=\"$image\">تصویر خبر</a>";
-                        Log::info("Added image link to message for news #$index: $title from $name for chat_id: {$this->chatId}", ['image' => $image]);
+                        $message .= "\n🖼️ <a href=\"$image\">تصویر خبر</a>";
                     }
 
                     try {
