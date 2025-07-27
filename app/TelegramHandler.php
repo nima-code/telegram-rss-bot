@@ -2,7 +2,6 @@
 namespace App;
 
 use Telegram\Bot\Api;
-use Telegram\Bot\FileUpload\InputFile;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use GuzzleHttp\Client;
@@ -403,6 +402,7 @@ class TelegramHandler
                     continue;
                 }
 
+                // محدود کردن به ۱۰ آیتم اول برای بهینه‌سازی
                 $items = array_slice(iterator_to_array($items), 0, 10);
                 $itemCount = count($items);
                 Log::debug("Found $itemCount items in feed: $name ($url)", ['items' => array_map(function($item) use ($namespaces) {
@@ -414,6 +414,7 @@ class TelegramHandler
                     ];
                 }, $items)]);
 
+                // فیلتر آیتم‌های اخیر و غیرتکراری
                 $latestItems = [];
                 foreach ($items as $item) {
                     $link = $this->getFeedData($item, $namespaces, 'link', 'identifier');
@@ -444,8 +445,13 @@ class TelegramHandler
                     $linkHtml = $link !== '#' ? "<a href=\"$link\">مشاهده خبر</a>" : 'بدون لینک';
                     $message = "📰 سایت: $name\n🗞️ عنوان: <b>$title</b>\n\n🕒 زمان انتشار: <i>$jalaliDate</i>\n\n🔗 $linkHtml";
 
+                    // اضافه کردن تصویر به انتهای پیام
                     $metadata = $this->checkOpenGraphMetadata($link);
                     $hasValidMetadata = $metadata['hasOgImage'] && $metadata['hasOgTitle'] && $metadata['hasOgDescription'];
+                    if (!$hasValidMetadata && $image && filter_var($image, FILTER_VALIDATE_URL)) {
+                        $message .= "\n\n🖼️ تصویر خبر: <a href=\"$image\">تصویر خبر</a>";
+                        Log::info("Added image link to message for news #$index: $title from $name for chat_id: {$this->chatId}", ['image' => $image]);
+                    }
 
                     try {
                         $this->telegram->sendMessage([
@@ -455,22 +461,7 @@ class TelegramHandler
                             'disable_web_page_preview' => false,
                             'reply_markup' => $replyMarkup
                         ]);
-                        Log::info("Sent news #$index: $title from $name for chat_id: {$this->chatId}", ['link' => $link, 'pubDate' => $pubDate, 'jalaliDate' => $jalaliDate]);
-
-                        // اضافه کردن تصویر به‌عنوان پیام جداگانه فقط اگه متادیتا ناقص باشه
-                        if (!$hasValidMetadata && $image && filter_var($image, FILTER_VALIDATE_URL)) {
-                            try {
-                                $this->telegram->sendPhoto([
-                                    'chat_id' => $this->chatId,
-                                    'photo' => $image, // استفاده مستقیم از URL تصویر
-                                    'reply_markup' => $replyMarkup
-                                ]);
-                                Log::info("Sent image for news #$index: $title from $name for chat_id: {$this->chatId}", ['image' => $image]);
-                            } catch (\Exception $e) {
-                                Log::error("Failed to send photo for news #$index: $title from $name: {$e->getMessage()}");
-                            }
-                        }
-
+                        Log::info("Sent news #$index: $title from $name for chat_id: {$this->chatId}", ['link' => $link, 'pubDate' => $pubDate, 'jalaliDate' => $jalaliDate, 'image' => $image]);
                         $this->saveSentLink($link);
                     } catch (\Exception $e) {
                         Log::error("Failed to send news #$index: $title from $name: {$e->getMessage()}");
