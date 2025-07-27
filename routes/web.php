@@ -1,6 +1,5 @@
 <?php
 use App\TelegramHandler;
-use App\Http\Controllers\MetadataProxyController;
 use Telegram\Bot\Api;
 
 $router->get('/', function () use ($router) {
@@ -36,6 +35,4 @@ $router->get('/check-feeds', function () use ($router) {
 
     return response('Feed check completed', 200);
 });
-
-$router->get('/proxy-metadata', [MetadataProxyController::class, 'proxy']);
 ?>

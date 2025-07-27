@@ -17,18 +17,12 @@ class CheckFeedsController extends Controller
             }
             
             $telegram = new Api($token);
-            $envVars = array_filter($_ENV, function($key) {
-                return strpos($key, 'FEEDS_CONFIG_') === 0;
-            }, ARRAY_FILTER_USE_KEY);
-
-            foreach ($envVars as $key => $value) {
-                $chatId = str_replace('FEEDS_CONFIG_', '', $key);
-                $handler = new \App\TelegramHandler($telegram, $chatId);
-                $handler->checkAndSendFeeds();
-                Log::info("Processed feeds for chat_id: $chatId");
-            }
+            $chatId = '1428476584'; // می‌تونی اینو از یه فایل تنظیمات بخونی
+            $handler = new \App\TelegramHandler($telegram, $chatId);
+            $replyMarkup = json_encode($handler->getReplyMarkup());
+            $handler->sendLatestNews($replyMarkup);
             
-            Log::info('Cron job executed successfully');
+            Log::info('Cron job executed successfully for chat_id: ' . $chatId);
             return response()->json(['status' => 'ok']);
         } catch (\Exception $e) {
             Log::error("Error in CheckFeedsController: {$e->getMessage()}", ['exception' => $e]);

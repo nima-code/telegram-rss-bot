@@ -4,7 +4,7 @@ namespace App;
 use Telegram\Bot\Api;
 use Telegram\Bot\FileUpload\InputFile;
 use Illuminate\Support\Facades\Log;
-use Illuminateflysystem/filesystem;
+use Illuminate\Support\Facades\Storage;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\RequestException;
 use DateTime;
@@ -457,11 +457,12 @@ class TelegramHandler
                         ]);
                         Log::info("Sent news #$index: $title from $name for chat_id: {$this->chatId}", ['link' => $link, 'pubDate' => $pubDate, 'jalaliDate' => $jalaliDate]);
 
+                        // اضافه کردن تصویر به‌عنوان پیام جداگانه فقط اگه متادیتا ناقص باشه
                         if (!$hasValidMetadata && $image && filter_var($image, FILTER_VALIDATE_URL)) {
                             try {
                                 $this->telegram->sendPhoto([
                                     'chat_id' => $this->chatId,
-                                    'photo' => InputFile::create($image),
+                                    'photo' => $image, // استفاده مستقیم از URL تصویر
                                     'reply_markup' => $replyMarkup
                                 ]);
                                 Log::info("Sent image for news #$index: $title from $name for chat_id: {$this->chatId}", ['image' => $image]);

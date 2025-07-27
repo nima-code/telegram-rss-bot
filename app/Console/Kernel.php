@@ -10,7 +10,9 @@ class Kernel extends ConsoleKernel
 
     protected function schedule(Schedule $schedule)
     {
-        // Cron Job داخلی حذف شد چون پلن رایگان10 دقیقه‌ای پشتیبانی نمی‌شود
+        $schedule->call(function () {
+            \Illuminate\Support\Facades\Log::info('Cron job running');
+        })->everyFifteenMinutes();
     }
 }
 ?>
