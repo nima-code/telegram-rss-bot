@@ -11,7 +11,7 @@ RUN apk add --no-cache \
 
 WORKDIR /app
 COPY . /app
-RUN composer install --no-dev --optimize-autoloader || { echo "Composer install failed"; exit 1; }
+RUN composer require guzzlehttp/guzzle && composer install --no-dev --optimize-autoloader || { echo "Composer install failed"; exit 1; }
 
 RUN mkdir -p /app/public /app/routes /etc/nginx /var/log/nginx /var/log/supervisor /var/run /app/storage /app/storage/logs /app/storage/feeds \
     && chown -R www-data:www-data /app/public /app/routes /etc/nginx /var/log/nginx /var/log/supervisor /var/run /app/storage /app/storage/logs /app/storage/feeds \

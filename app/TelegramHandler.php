@@ -6,6 +6,8 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\RequestException;
+use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Middleware;
 use DateTime;
 use DateTimeZone;
 use Morilog\Jalali\Jalalian;
@@ -23,8 +25,26 @@ class TelegramHandler
         $this->telegram = $telegram;
         $this->chatId = $chatId;
         $this->sentLinksFile = "feeds/sent_{$this->chatId}.json";
+
+        // تنظیم Guzzle با Retry Middleware
+        $handlerStack = HandlerStack::create();
+        $handlerStack->push(Middleware::retry(
+            function ($retries, $request, $response, $exception) {
+                if ($retries >= 3) {
+                    return false; // حداکثر ۳ تلاش
+                }
+                if ($exception instanceof RequestException) {
+                    Log::info("Retrying request for chat_id: {$this->chatId}, attempt: " . ($retries + 1));
+                    sleep(2); // تأخیر ۲ ثانیه بین تلاش‌ها
+                    return true;
+                }
+                return false;
+            }
+        ));
+
         $this->httpClient = new Client([
-            'timeout' => 10, // کاهش Timeout برای بهینه‌سازی
+            'timeout' => 20, // افزایش تایم‌اوت به ۲۰ ثانیه
+            'handler' => $handlerStack,
             'headers' => [
                 'User-Agent' => 'Mozilla/5.0 (compatible; LumenRSSBot/1.0; +https://telegram-rss-bot-kmgj.onrender.com)'
             ]
@@ -298,6 +318,11 @@ class TelegramHandler
             }
         }
 
+        if ($tag === 'description' && isset($item->description)) {
+            $value = strip_tags((string)$item->description);
+            return $value !== '' ? substr($value, 0, 200) : 'بدون توضیحات';
+        }
+
         return $tag === 'image' ? null : ($tag === 'link' ? '#' : 'بدون ' . $tag);
     }
 
@@ -380,9 +405,19 @@ class TelegramHandler
         foreach ($this->config['feeds'] as $name => $url) {
             try {
                 Log::info("Loading feed: $name ($url) for chat_id: {$this->chatId}");
-                $response = $this->httpClient->get($url);
-                $xmlContent = $response->getBody()->getContents();
-                Log::debug("Fetched feed content for $name ($url)", ['length' => strlen($xmlContent)]);
+                
+                // چک کردن کش
+                $cacheFile = "feeds/cache_{$this->chatId}_" . md5($url) . ".xml";
+                $cacheTTL = 600; // ۱۰ دقیقه
+                if (Storage::exists($cacheFile) && (time() - Storage::lastModified($cacheFile)) < $cacheTTL) {
+                    $xmlContent = Storage::get($cacheFile);
+                    Log::info("Using cached feed content for $name ($url)", ['file' => $cacheFile]);
+                } else {
+                    $response = $this->httpClient->get($url);
+                    $xmlContent = $response->getBody()->getContents();
+                    Storage::put($cacheFile, $xmlContent);
+                    Log::info("Fetched and cached feed content for $name ($url)", ['file' => $cacheFile, 'length' => strlen($xmlContent)]);
+                }
 
                 $xml = @simplexml_load_string($xmlContent, 'SimpleXMLElement', LIBXML_NOCDATA);
                 if ($xml === false) {
@@ -440,17 +475,25 @@ class TelegramHandler
                     $link = $this->getFeedData($item, $namespaces, 'link', 'identifier');
                     $pubDate = $this->getFeedData($item, $namespaces, 'pubDate', 'date');
                     $image = $this->getFeedData($item, $namespaces, 'image');
+                    $description = $this->getFeedData($item, $namespaces, 'description');
                     $jalaliDate = $this->formatJalaliDate($pubDate);
 
                     $linkHtml = $link !== '#' ? "<a href=\"$link\">مشاهده خبر</a>" : 'بدون لینک';
-                    $message = "📰 سایت: $name\n🗞️ عنوان: <b>$title</b>\n\n🕒 زمان انتشار: <i>$jalaliDate</i>\n\n🔗 $linkHtml";
+                    $message = "📰 سایت: $name\n🗞️ عنوان: <b>$title</b>";
 
-                    // اضافه کردن تصویر به پیام اگه متادیتا ناقص باشه
+                    // بهبود Instant View با Fallback
                     $metadata = $this->checkOpenGraphMetadata($link);
                     $hasValidMetadata = $metadata['hasOgImage'] && $metadata['hasOgTitle'] && $metadata['hasOgDescription'];
-                    if (!$hasValidMetadata && $image && filter_var($image, FILTER_VALIDATE_URL)) {
-                        $message .= "\n🖼️ <a href=\"$image\">تصویر خبر</a>";
+                    if (!$hasValidMetadata) {
+                        // استفاده از داده‌های فید برای شبیه‌سازی Instant View
+                        $message .= "\n\n📝 توضیحات: " . htmlspecialchars($description, ENT_QUOTES, 'UTF-8');
+                        if ($image && filter_var($image, FILTER_VALIDATE_URL)) {
+                            $message .= "\n\n🖼️ تصویر خبر: <a href=\"$image\">تصویر خبر</a>";
+                            Log::info("Added image link to message for news #$index: $title from $name for chat_id: {$this->chatId}", ['image' => $image]);
+                        }
                     }
+
+                    $message .= "\n\n🕒 زمان انتشار: <i>$jalaliDate</i>\n\n🔗 $linkHtml";
 
                     try {
                         $this->telegram->sendMessage([
