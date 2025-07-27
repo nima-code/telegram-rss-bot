@@ -3,16 +3,17 @@ namespace App\Console;
 
 use Illuminate\Console\Scheduling\Schedule;
 use Laravel\Lumen\Console\Kernel as ConsoleKernel;
+use App\Console\Commands\CheckFeeds;
 
 class Kernel extends ConsoleKernel
 {
-    protected $commands = [];
+    protected $commands = [
+        CheckFeeds::class,
+    ];
 
     protected function schedule(Schedule $schedule)
     {
-        $schedule->call(function () {
-            \Illuminate\Support\Facades\Log::info('Cron job running');
-        })->everyFifteenMinutes();
+        $schedule->command('rss:check')->everyFifteenMinutes();
     }
 }
 ?>
