@@ -10,10 +10,9 @@ class Kernel extends ConsoleKernel
 
     protected function schedule(Schedule $schedule)
     {
-        // Schedule غیرفعال شده چون تو پلن رایگان Render از Cron Job خارجی استفاده می‌کنیم
-        // $schedule->call(function () {
-        //     \Illuminate\Support\Facades\Log::info('Cron job running');
-        // })->everyFifteenMinutes();
+        $schedule->call(function () {
+            \Illuminate\Support\Facades\Log::info('Cron job running');
+        })->everyFifteenMinutes();
     }
 }
 ?>
