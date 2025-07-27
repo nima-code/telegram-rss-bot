@@ -2,8 +2,9 @@
 namespace App;
 
 use Telegram\Bot\Api;
+use Telegram\Bot\FileUpload\InputFile;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
+use Illuminateflysystem/filesystem;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\RequestException;
 use DateTime;
@@ -17,7 +18,6 @@ class TelegramHandler
     protected $config;
     protected $httpClient;
     protected $sentLinksFile;
-    protected $defaultImage = 'https://telegram-rss-bot-kmgj.onrender.com/default-image.jpg'; // تصویر پیش‌فرض
 
     public function __construct(Api $telegram, string $chatId)
     {
@@ -328,19 +328,11 @@ class TelegramHandler
         }
     }
 
-    protected function checkOpenGraphMetadata($url, $item, $namespaces)
+    protected function checkOpenGraphMetadata($url)
     {
         if (!filter_var($url, FILTER_VALIDATE_URL) || $url === '#') {
             Log::info("Skipping Open Graph metadata check for invalid URL: $url");
-            return [
-                'hasOgImage' => false,
-                'hasOgTitle' => false,
-                'hasOgDescription' => false,
-                'ogImage' => $this->defaultImage,
-                'ogTitle' => 'بدون عنوان',
-                'ogDescription' => 'بدون توضیحات',
-                'statusCode' => null
-            ];
+            return ['hasOgImage' => false, 'hasOgTitle' => false, 'hasOgDescription' => false, 'statusCode' => null];
         }
 
         try {
@@ -350,63 +342,23 @@ class TelegramHandler
             $hasOgImage = preg_match('/<meta[^>]+property=["\']og:image["\'][^>]+content=["\'](.*?)["\']/i', $html, $ogImage);
             $hasOgTitle = preg_match('/<meta[^>]+property=["\']og:title["\'][^>]+content=["\'](.*?)["\']/i', $html, $ogTitle);
             $hasOgDescription = preg_match('/<meta[^>]+property=["\']og:description["\'][^>]+content=["\'](.*?)["\']/i', $html, $ogDescription);
-
-            // پر کردن متادیتا با داده‌های RSS اگه ناقص باشه
-            $title = !empty($ogTitle[1]) ? $ogTitle[1] : $this->getFeedData($item, $namespaces, 'title', 'title');
-            $description = !empty($ogDescription[1]) ? $ogDescription[1] : (
-                isset($item->description) ? strip_tags((string)$item->description) : 'بدون توضیحات'
-            );
-            $image = !empty($ogImage[1]) && filter_var($ogImage[1], FILTER_VALIDATE_URL) ? $ogImage[1] : (
-                $this->getFeedData($item, $namespaces, 'image') ?? $this->defaultImage
-            );
-
+            
             $result = [
                 'hasOgImage' => $hasOgImage && !empty($ogImage[1]) && filter_var($ogImage[1], FILTER_VALIDATE_URL),
                 'hasOgTitle' => $hasOgTitle && !empty($ogTitle[1]),
                 'hasOgDescription' => $hasOgDescription && !empty($ogDescription[1]),
-                'ogImage' => $image,
-                'ogTitle' => substr($title, 0, 100),
-                'ogDescription' => substr($description, 0, 200),
                 'statusCode' => $statusCode
             ];
             
-            Log::debug("Checked Open Graph metadata for $url", $result);
+            Log::debug("Checked Open Graph metadata for $url", $result + ['ogImage' => $ogImage[1] ?? null]);
             return $result;
         } catch (RequestException $e) {
             $errorMsg = $e->hasResponse() ? $e->getResponse()->getStatusCode() . ' ' . $e->getResponse()->getReasonPhrase() : $e->getMessage();
             Log::error("Failed to check Open Graph metadata for $url: $errorMsg", ['exception' => $e]);
-
-            // پر کردن متادیتا با داده‌های RSS در صورت خطا
-            $title = $this->getFeedData($item, $namespaces, 'title', 'title');
-            $description = isset($item->description) ? strip_tags((string)$item->description) : 'بدون توضیحات';
-            $image = $this->getFeedData($item, $namespaces, 'image') ?? $this->defaultImage;
-
-            return [
-                'hasOgImage' => false,
-                'hasOgTitle' => false,
-                'hasOgDescription' => false,
-                'ogImage' => $image,
-                'ogTitle' => substr($title, 0, 100),
-                'ogDescription' => substr($description, 0, 200),
-                'statusCode' => null
-            ];
+            return ['hasOgImage' => false, 'hasOgTitle' => false, 'hasOgDescription' => false, 'statusCode' => null];
         } catch (\Exception $e) {
             Log::error("Unexpected error checking Open Graph metadata for $url: {$e->getMessage()}", ['exception' => $e]);
-
-            // پر کردن متادیتا با داده‌های RSS در صورت خطا
-            $title = $this->getFeedData($item, $namespaces, 'title', 'title');
-            $description = isset($item->description) ? strip_tags((string)$item->description) : 'بدون توضیحات';
-            $image = $this->getFeedData($item, $namespaces, 'image') ?? $this->defaultImage;
-
-            return [
-                'hasOgImage' => false,
-                'hasOgTitle' => false,
-                'hasOgDescription' => false,
-                'ogImage' => $image,
-                'ogTitle' => substr($title, 0, 100),
-                'ogDescription' => substr($description, 0, 200),
-                'statusCode' => null
-            ];
+            return ['hasOgImage' => false, 'hasOgTitle' => false, 'hasOgDescription' => false, 'statusCode' => null];
         }
     }
 
@@ -451,7 +403,6 @@ class TelegramHandler
                     continue;
                 }
 
-                // محدود کردن به ۱۰ آیتم اول برای بهینه‌سازی
                 $items = array_slice(iterator_to_array($items), 0, 10);
                 $itemCount = count($items);
                 Log::debug("Found $itemCount items in feed: $name ($url)", ['items' => array_map(function($item) use ($namespaces) {
@@ -463,7 +414,6 @@ class TelegramHandler
                     ];
                 }, $items)]);
 
-                // فیلتر آیتم‌های اخیر و غیرتکراری
                 $latestItems = [];
                 foreach ($items as $item) {
                     $link = $this->getFeedData($item, $namespaces, 'link', 'identifier');
@@ -491,26 +441,11 @@ class TelegramHandler
                     $image = $this->getFeedData($item, $namespaces, 'image');
                     $jalaliDate = $this->formatJalaliDate($pubDate);
 
-                    // پر کردن متادیتا برای پروکسی
-                    $metadata = $this->checkOpenGraphMetadata($link, $item, $namespaces);
-                    $description = isset($item->description) ? strip_tags((string)$item->description) : 'بدون توضیحات';
-                    $description = substr($description, 0, 200);
-
-                    // تولید لینک پروکسی
-                    $proxyLink = url('/proxy-metadata') . '?' . http_build_query([
-                        'url' => $link,
-                        'title' => $metadata['ogTitle'],
-                        'description' => $metadata['ogDescription'],
-                        'image' => $metadata['ogImage']
-                    ]);
-
-                    $linkHtml = $link !== '#' ? "<a href=\"$proxyLink\">مشاهده خبر</a>" : 'بدون لینک';
+                    $linkHtml = $link !== '#' ? "<a href=\"$link\">مشاهده خبر</a>" : 'بدون لینک';
                     $message = "📰 سایت: $name\n🗞️ عنوان: <b>$title</b>\n\n🕒 زمان انتشار: <i>$jalaliDate</i>\n\n🔗 $linkHtml";
 
-                    // اضافه کردن تصویر به پیام اگه متادیتا ناقص باشه
-                    if (!$metadata['hasOgImage'] && $image && filter_var($image, FILTER_VALIDATE_URL)) {
-                        $message .= "\n🖼️ <a href=\"$image\">تصویر خبر</a>";
-                    }
+                    $metadata = $this->checkOpenGraphMetadata($link);
+                    $hasValidMetadata = $metadata['hasOgImage'] && $metadata['hasOgTitle'] && $metadata['hasOgDescription'];
 
                     try {
                         $this->telegram->sendMessage([
@@ -520,7 +455,21 @@ class TelegramHandler
                             'disable_web_page_preview' => false,
                             'reply_markup' => $replyMarkup
                         ]);
-                        Log::info("Sent news #$index: $title from $name for chat_id: {$this->chatId}", ['link' => $link, 'proxyLink' => $proxyLink, 'pubDate' => $pubDate, 'jalaliDate' => $jalaliDate, 'image' => $image]);
+                        Log::info("Sent news #$index: $title from $name for chat_id: {$this->chatId}", ['link' => $link, 'pubDate' => $pubDate, 'jalaliDate' => $jalaliDate]);
+
+                        if (!$hasValidMetadata && $image && filter_var($image, FILTER_VALIDATE_URL)) {
+                            try {
+                                $this->telegram->sendPhoto([
+                                    'chat_id' => $this->chatId,
+                                    'photo' => InputFile::create($image),
+                                    'reply_markup' => $replyMarkup
+                                ]);
+                                Log::info("Sent image for news #$index: $title from $name for chat_id: {$this->chatId}", ['image' => $image]);
+                            } catch (\Exception $e) {
+                                Log::error("Failed to send photo for news #$index: $title from $name: {$e->getMessage()}");
+                            }
+                        }
+
                         $this->saveSentLink($link);
                     } catch (\Exception $e) {
                         Log::error("Failed to send news #$index: $title from $name: {$e->getMessage()}");

@@ -3,17 +3,14 @@ namespace App\Console;
 
 use Illuminate\Console\Scheduling\Schedule;
 use Laravel\Lumen\Console\Kernel as ConsoleKernel;
-use App\Console\Commands\CheckFeeds;
 
 class Kernel extends ConsoleKernel
 {
-    protected $commands = [
-        CheckFeeds::class,
-    ];
+    protected $commands = [];
 
     protected function schedule(Schedule $schedule)
     {
-        $schedule->command('rss:check')->everyFifteenMinutes();
+        // Cron Job داخلی حذف شد چون پلن رایگان10 دقیقه‌ای پشتیبانی نمی‌شود
     }
 }
 ?>

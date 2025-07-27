@@ -13,9 +13,9 @@ WORKDIR /app
 COPY . /app
 RUN composer install --no-dev --optimize-autoloader || { echo "Composer install failed"; exit 1; }
 
-RUN mkdir -p /app/public /app/routes /app/resources/views /etc/nginx /var/log/nginx /var/log/supervisor /var/run /app/storage /app/storage/logs /app/storage/feeds \
-    && chown -R www-data:www-data /app/public /app/routes /app/resources/views /etc/nginx /var/log/nginx /var/log/supervisor /var/run /app/storage /app/storage/logs /app/storage/feeds \
-    && chmod -R 775 /app/public /app/routes /app/resources/views /etc/nginx /var/log/nginx /var/log/supervisor /var/run /app/storage /app/storage/logs /app/storage/feeds \
+RUN mkdir -p /app/public /app/routes /etc/nginx /var/log/nginx /var/log/supervisor /var/run /app/storage /app/storage/logs /app/storage/feeds \
+    && chown -R www-data:www-data /app/public /app/routes /etc/nginx /var/log/nginx /var/log/supervisor /var/run /app/storage /app/storage/logs /app/storage/feeds \
+    && chmod -R 775 /app/public /app/routes /etc/nginx /var/log/nginx /var/log/supervisor /var/run /app/storage /app/storage/logs /app/storage/feeds \
     && touch /app/storage/logs/lumen-$(date +%Y-%m-%d).log \
     && chown www-data:www-data /app/storage/logs/lumen-$(date +%Y-%m-%d).log \
     && chmod 664 /app/storage/logs/lumen-$(date +%Y-%m-%d).log \
@@ -28,13 +28,11 @@ RUN mkdir -p /app/public /app/routes /app/resources/views /etc/nginx /var/log/ng
     && touch /app/storage/feeds/test.json && rm /app/storage/feeds/test.json || { echo "Storage write test failed"; exit 1; } \
     && (test -f /app/.env || { echo "Creating default .env"; echo -e "APP_NAME=LumenRSSBot\nAPP_ENV=local\nAPP_KEY=$(php -r 'echo base64_encode(random_bytes(32));')\nAPP_DEBUG=true\nTELEGRAM_BOT_TOKEN=7648771268:AAE4Hxioz8tTod0vmm8ajN4Pdz4ikQ0ktbg\nTELEGRAM_MODE=webhook" > /app/.env; }) \
     && test -f /app/public/index.php || { echo "index.php not found"; exit 1; } \
-    && test -f /app/public/default-image.jpg || { echo "default-image.jpg not found"; exit 1; } \
     && test -f /app/vendor/autoload.php || { echo "vendor/autoload.php not found"; exit 1; } \
     && echo "Checking nginx config" && nginx -t || { echo "nginx config test failed"; exit 1; }
 
 COPY ./nginx.conf /etc/nginx/nginx.conf
 COPY ./supervisord.conf /etc/supervisord.conf
-COPY ./public/default-image.jpg /app/public/default-image.jpg
 
 EXPOSE 80
 CMD ["/bin/sh", "-c", "touch /app/storage/logs/lumen-$(date +%Y-%m-%d).log && chown www-data:www-data /app/storage/logs/lumen-$(date +%Y-%m-%d).log && chmod 664 /app/storage/logs/lumen-$(date +%Y-%m-%d).log && touch /app/storage/feeds/sent_${TELEGRAM_CHAT_ID:-1428476584}.json && chown www-data:www-data /app/storage/feeds/sent_${TELEGRAM_CHAT_ID:-1428476584}.json && chmod 664 /app/storage/feeds/sent_${TELEGRAM_CHAT_ID:-1428476584}.json && /usr/bin/supervisord -c /etc/supervisord.conf"]
