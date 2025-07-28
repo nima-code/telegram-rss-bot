@@ -6,9 +6,12 @@ RUN apk add --no-cache \
     oniguruma-dev \
     curl \
     supervisor \
+    tzdata \
     && docker-php-ext-install mbstring xml simplexml dom \
     && curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer \
-    && curl -o /etc/ssl/certs/cacert.pem https://curl.se/ca/cacert.pem
+    && curl -o /etc/ssl/certs/cacert.pem https://curl.se/ca/cacert.pem \
+    && cp /usr/share/zoneinfo/Asia/Tehran /etc/localtime \
+    && echo "Asia/Tehran" > /etc/timezone
 
 WORKDIR /app
 COPY . /app
