@@ -6,16 +6,12 @@ RUN apk add --no-cache \
     oniguruma-dev \
     curl \
     supervisor \
-    tzdata \
     && docker-php-ext-install mbstring xml simplexml dom \
-    && curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer \
-    && curl -o /etc/ssl/certs/cacert.pem https://curl.se/ca/cacert.pem \
-    && cp /usr/share/zoneinfo/Asia/Tehran /etc/localtime \
-    && echo "Asia/Tehran" > /etc/timezone
+    && curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
 
 WORKDIR /app
 COPY . /app
-RUN composer require guzzlehttp/guzzle && composer install --no-dev --optimize-autoloader || { echo "Composer install failed"; exit 1; }
+RUN composer install --no-dev --optimize-autoloader || { echo "Composer install failed"; exit 1; }
 
 RUN mkdir -p /app/public /app/routes /etc/nginx /var/log/nginx /var/log/supervisor /var/run /app/storage /app/storage/logs /app/storage/feeds \
     && chown -R www-data:www-data /app/public /app/routes /etc/nginx /var/log/nginx /var/log/supervisor /var/run /app/storage /app/storage/logs /app/storage/feeds \
