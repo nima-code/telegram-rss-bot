@@ -26,13 +26,28 @@ $router->get('/check-feeds', function () use ($router) {
         return strpos($key, 'FEEDS_CONFIG_') === 0;
     }, ARRAY_FILTER_USE_KEY);
 
+    $processedChats = [];
     foreach ($envVars as $key => $value) {
         $chatId = str_replace('FEEDS_CONFIG_', '', $key);
-        $handler = new TelegramHandler($telegram, $chatId);
-        $handler->checkAndSendFeeds();
+        try {
+            $handler = new TelegramHandler($telegram, $chatId);
+            $config = $handler->getConfig();
+            if ($config['auto_send'] === true) {
+                $handler->checkAndSendFeeds();
+                $processedChats[] = $chatId;
+            } else {
+                Log::info("Skipping chat_id: $chatId due to auto_send being disabled");
+            }
+        } catch (\Exception $e) {
+            Log::error("Error processing feeds for chat_id: $chatId: {$e->getMessage()}");
+        }
     }
 
-    return response('Feed check completed', 200);
+    return response()->json([
+        'status' => 'ok',
+        'processed_chats' => $processedChats,
+        'message' => 'Feed check completed for ' . count($processedChats) . ' chats'
+    ], 200);
 });
 
 $router->get('/test-feed', function () use ($router) {

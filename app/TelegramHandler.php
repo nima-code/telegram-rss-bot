@@ -19,24 +19,32 @@ class TelegramHandler
     protected $config;
     protected $httpClient;
     protected $sentLinksFile;
-    protected $maxSentLinks = 500; // حداکثر تعداد لینک‌های ذخیره‌شده
+    protected $maxSentLinks = 500;
+    protected $defaultImage = 'https://www.khabaronline.ir/assets/khabaronline-logo.png';
+    protected $imageCacheFile;
 
     public function __construct(Api $telegram, string $chatId)
     {
         $this->telegram = $telegram;
         $this->chatId = $chatId;
         $this->sentLinksFile = "feeds/sent_{$chatId}.json";
+        $this->imageCacheFile = "feeds/image_cache_{$chatId}.json";
 
         $this->httpClient = new Client([
-            'timeout' => 30, // افزایش timeout به 30 ثانیه
+            'timeout' => 90,
+            'connect_timeout' => 15,
             'verify' => false,
+            'proxy' => env('HTTP_PROXY', ''),
             'headers' => [
-                'User-Agent' => 'Mozilla/5.0 (compatible; LumenRSSBot/1.0; +https://telegram-rss-bot-kmgj.onrender.com)'
-            ],
-            'dns' => ['8.8.8.8', '8.8.4.4'] // استفاده از Google DNS
+                'User-Agent' => 'TelegramBot/1.0 (+https://core.telegram.org/bots)',
+                'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language' => 'en-US,en;q=0.5',
+                'X-Telegram-Bot' => 'LumenRSSBot/1.0'
+            ]
         ]);
         $this->loadConfig();
         $this->initializeSentLinks();
+        $this->initializeImageCache();
         Log::warning("SSL verification disabled for HTTP requests. Consider updating CA bundle for security.", ['chat_id' => $this->chatId]);
     }
 
@@ -45,6 +53,14 @@ class TelegramHandler
         if (!Storage::exists($this->sentLinksFile)) {
             Storage::put($this->sentLinksFile, json_encode(['sent_links' => []], JSON_UNESCAPED_UNICODE));
             Log::info("Initialized sent links file for chat_id: {$this->chatId}", ['file' => $this->sentLinksFile]);
+        }
+    }
+
+    protected function initializeImageCache()
+    {
+        if (!Storage::exists($this->imageCacheFile)) {
+            Storage::put($this->imageCacheFile, json_encode([], JSON_UNESCAPED_UNICODE));
+            Log::info("Initialized image cache file for chat_id: {$this->chatId}", ['file' => $this->imageCacheFile]);
         }
     }
 
@@ -61,6 +77,20 @@ class TelegramHandler
             return $sentLinks;
         }
         return [];
+    }
+
+    protected function loadImageCache()
+    {
+        if (Storage::exists($this->imageCacheFile)) {
+            return json_decode(Storage::get($this->imageCacheFile), true) ?? [];
+        }
+        return [];
+    }
+
+    protected function saveImageCache($cache)
+    {
+        Storage::put($this->imageCacheFile, json_encode($cache, JSON_UNESCAPED_UNICODE));
+        Log::info("Saved image cache for chat_id: {$this->chatId}", ['cache_size' => count($cache)]);
     }
 
     protected function saveSentLink($link)
@@ -98,14 +128,12 @@ class TelegramHandler
             }
         } else {
             $this->config = ['feeds' => [], 'auto_send' => false];
-            if (class_exists('\Illuminate\Support\Facades\Storage')) {
-                $configFile = "feeds/{$this->chatId}.json";
-                if (Storage::exists($configFile)) {
-                    $this->config = json_decode(Storage::get($configFile), true);
-                    if ($this->config === null) {
-                        Log::error("Invalid JSON in $configFile for chat_id: {$this->chatId}");
-                        $this->config = ['feeds' => [], 'auto_send' => false];
-                    }
+            $configFile = "feeds/{$this->chatId}.json";
+            if (Storage::exists($configFile)) {
+                $this->config = json_decode(Storage::get($configFile), true);
+                if ($this->config === null) {
+                    Log::error("Invalid JSON in $configFile for chat_id: {$this->chatId}");
+                    $this->config = ['feeds' => [], 'auto_send' => false];
                 }
             }
         }
@@ -121,7 +149,7 @@ class TelegramHandler
     protected function saveConfig($config)
     {
         $cleanedFeeds = [];
-        for ($config['feeds'] as $name => $url) {
+        foreach ($config['feeds'] as $name => $url) {
             $cleanedName = $this->normalizeFeedName($name);
             $cleanedFeeds[$cleanedName] = $url;
         }
@@ -132,19 +160,17 @@ class TelegramHandler
         $jsonConfig = json_encode($config, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
         Log::info("Please set env $envKey=$jsonConfig for chat_id: {$this->chatId} to persist changes permanently");
         
-        if (class_exists('\Illuminate\Support\Facades\Storage')) {
-            $configFile = "feeds/{$this->chatId}.json";
-            try {
-                Storage::put($configFile, $jsonConfig);
-                Log::info("Saved config to $configFile for chat_id: {$this->chatId}", ['config' => $config]);
-            } catch (\Exception $e) {
-                Log::error("Failed to save config to $configFile for chat_id: {$this->chatId}: {$e->getMessage()}");
-                throw $e;
-            }
+        $configFile = "feeds/{$this->chatId}.json";
+        try {
+            Storage::put($configFile, $jsonConfig);
+            Log::info("Saved config to $configFile for chat_id: {$this->chatId}", ['config' => $config]);
+        } catch (\Exception $e) {
+            Log::error("Failed to save config to $configFile for chat_id: {$this->chatId}: {$e->getMessage()}");
+            throw $e;
         }
     }
 
-    protected function getReplyMarkup()
+    public function getReplyMarkup()
     {
         return [
             'keyboard' => [
@@ -155,6 +181,124 @@ class TelegramHandler
             'resize_keyboard' => true,
             'one_time_keyboard' => false
         ];
+    }
+
+    protected function cleanXmlContent($xmlContent)
+    {
+        $xmlContent = preg_replace('/^\xEF\xBB\xBF/', '', $xmlContent);
+        $xmlContent = preg_replace('/[^\x{0009}\x{000A}\x{000D}\x{0020}-\x{D7FF}\x{E000}-\x{FFFD}]+/u', '', $xmlContent);
+        if (!mb_check_encoding($xmlContent, 'UTF-8')) {
+            $xmlContent = mb_convert_encoding($xmlContent, 'UTF-8', 'auto');
+        }
+        if (!preg_match('/^<\?xml\s+version=/i', $xmlContent)) {
+            $xmlContent = '<?xml version="1.0" encoding="UTF-8"?>' . "\n" . $xmlContent;
+        }
+        return $xmlContent;
+    }
+
+    protected function getOgImage($url)
+    {
+        $cache = $this->loadImageCache();
+        if (isset($cache[$url]) && (time() - $cache[$url]['timestamp']) < 3600) {
+            Log::info("Using cached og:image for $url", ['image' => $cache[$url]['image']]);
+            return $cache[$url]['image'];
+        }
+
+        for ($attempt = 1; $attempt <= 3; $attempt++) {
+            try {
+                $response = $this->httpClient->get($url);
+                $html = $response->getBody()->getContents();
+                $metaTags = [
+                    '/<meta\s+property="og:image"\s+content="([^"]+\.(jpg|jpeg|png))"/i',
+                    '/<meta\s+property="og:image:secure_url"\s+content="([^"]+\.(jpg|jpeg|png))"/i',
+                    '/<meta\s+name="twitter:image"\s+content="([^"]+\.(jpg|jpeg|png))"/i',
+                    '/<meta\s+property="og:image"\s+content="([^"]+)"/i',
+                    '/<meta\s+name="image"\s+content="([^"]+)"/i',
+                    '/<img\s+src="([^"]+\.(jpg|jpeg|png))"[^>]*>/i'
+                ];
+                $foundImages = [];
+                foreach ($metaTags as $pattern) {
+                    if (preg_match_all($pattern, $html, $matches)) {
+                        $foundImages = array_merge($foundImages, $matches[1]);
+                    }
+                }
+                $image = !empty($foundImages) ? $foundImages[0] : $this->defaultImage;
+                $cache[$url] = ['image' => $image, 'timestamp' => time()];
+                $this->saveImageCache($cache);
+                Log::info("Found og:image for $url", ['image' => $image, 'foundImages' => $foundImages]);
+                return $image;
+            } catch (\Exception $e) {
+                Log::warning("Retry $attempt for og:image $url: {$e->getMessage()}");
+                if ($attempt < 3) {
+                    sleep($attempt * 2);
+                    continue;
+                }
+                Log::error("Failed to fetch og:image for $url: {$e->getMessage()}");
+                $cache[$url] = ['image' => $this->defaultImage, 'timestamp' => time()];
+                $this->saveImageCache($cache);
+                return $this->defaultImage;
+            }
+        }
+        return $this->defaultImage;
+    }
+
+    protected function extractDescriptionFromPage($url)
+    {
+        try {
+            $response = $this->httpClient->get($url);
+            $html = $response->getBody()->getContents();
+            $doc = new \DOMDocument();
+            @$doc->loadHTML('<?xml encoding="UTF-8">' . $html);
+            $xpath = new \DOMXPath($doc);
+            $nodes = $xpath->query("//p[not(contains(@class, 'source') or contains(@class, 'meta') or contains(@class, 'footer'))]");
+            $text = '';
+            foreach ($nodes as $node) {
+                $nodeText = trim($node->textContent);
+                if ($nodeText && !preg_match('/(منبع:.*|به گزارش.*|خبرگزاری.*|ادامه مطلب.*|کلیک کنید.*|بیشتر بخوانید.*)/iu', $nodeText)) {
+                    $text .= $nodeText . ' ';
+                    if (mb_strlen($text, 'UTF-8') > 200) {
+                        break;
+                    }
+                }
+            }
+            $text = $this->cleanDescription($text);
+            Log::info("Extracted description from page $url", ['description' => $text]);
+            return $text !== '' ? $text : 'بدون توضیحات';
+        } catch (\Exception $e) {
+            Log::error("Failed to extract description from page $url: {$e->getMessage()}");
+            return 'بدون توضیحات';
+        }
+    }
+
+    protected function cleanDescription($description)
+    {
+        $cleaned = html_entity_decode($description, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $cleaned = strip_tags($cleaned);
+        $cleaned = preg_replace('/[\n\r\t]+/', ' ', $cleaned);
+        $cleaned = preg_replace('/\s+/u', ' ', $cleaned);
+        $patterns = [
+            '/(ادامه مطلب.*|کلیک کنید.*|بیشتر بخوانید.*|لینک منبع.*|اینجا کلیک کنید.*|مشاهده در.*|تماشا کنید.*)/iu',
+            '/\[.*?\]/u',
+            '/\(.*?\)/u',
+            '/\b(https?:\/\/[^\s]+)/u',
+            '/\s*[-–—]\s*/u',
+            '/(&nbsp;|&#160;|&zwnj;|&#8204;)/u',
+        ];
+        $cleaned = preg_replace($patterns, '', $cleaned);
+        $cleaned = trim($cleaned);
+
+        if (mb_strlen($cleaned, 'UTF-8') > 200) {
+            $pos = mb_strrpos(mb_substr($cleaned, 0, 200, 'UTF-8'), '.', 0, 'UTF-8');
+            if ($pos === false) {
+                $pos = mb_strrpos(mb_substr($cleaned, 0, 200, 'UTF-8'), '،', 0, 'UTF-8');
+            }
+            if ($pos === false) {
+                $pos = mb_strrpos(mb_substr($cleaned, 0, 200, 'UTF-8'), ' ', 0, 'UTF-8');
+            }
+            $cleaned = mb_substr($cleaned, 0, $pos !== false ? $pos + 1 : 200, 'UTF-8');
+        }
+
+        return !empty($cleaned) ? $cleaned : 'بدون توضیحات';
     }
 
     public function handleMessage($message)
@@ -209,7 +353,7 @@ class TelegramHandler
                     'text' => "ارسال خودکار اخبار فعال شد!",
                     'reply_markup' => $replyMarkup
                 ]);
-                Log::info("Enabled auto-send for chat_id: {$this->chatId}");
+                Log::info("Enabled auto-send for chat_id: {$this->chatId}", ['auto_send' => true]);
             } elseif ($text === 'توقف') {
                 $this->config['auto_send'] = false;
                 $this->saveConfig($this->config);
@@ -218,7 +362,7 @@ class TelegramHandler
                     'text' => 'ارسال خودکار اخبار متوقف شد!',
                     'reply_markup' => $replyMarkup
                 ]);
-                Log::info("Disabled auto-send for chat_id: {$this->chatId}");
+                Log::info("Disabled auto-send for chat_id: {$this->chatId}", ['auto_send' => false]);
             } elseif ($text === 'تغییر فید') {
                 $this->telegram->sendMessage([
                     'chat_id' => $this->chatId,
@@ -281,43 +425,15 @@ class TelegramHandler
 
     public function checkAndSendFeeds()
     {
-        Log::info("Checking feeds for auto-send for chat_id: {$this->chatId}");
+        Log::info("Checking feeds for auto-send for chat_id: {$this->chatId}", ['auto_send' => $this->config['auto_send']]);
         if ($this->config['auto_send'] === true) {
             $replyMarkup = json_encode($this->getReplyMarkup());
             $startTime = microtime(true);
             $this->sendLatestNews($replyMarkup, false);
-            Log::info("Auto-send completed for chat_id: {$this->chatId}", ['duration' => microtime(true) - $startTime]);
+            Log::info("Auto-send triggered for chat_id: {$this->chatId}", ['duration' => microtime(true) - $startTime]);
         } else {
             Log::info("Auto-send is disabled for chat_id: {$this->chatId}");
         }
-    }
-
-    protected function cleanDescription($description)
-    {
-        $cleaned = strip_tags($description);
-        $cleaned = preg_replace('/[\n\r\t]+/', ' ', $cleaned);
-        $cleaned = preg_replace('/\s+/u', ' ', $cleaned);
-        $cleaned = preg_replace('/(منبع:.*|The post.*|خبرگزاری.*|برای اولین بار.*|نوشته شده.*|به گزارش سایت اخبار تکنولوژی تکراتو.*|به گزارش تکراتو و به نقل از.*|بیسیمچی مدیا.*|ایرنا.*|مهر.*|خبرفوری.*)/iu', '', $cleaned);
-        $cleaned = trim($cleaned);
-        $cleaned = mb_substr($cleaned, 0, 150, 'UTF-8');
-        return !empty($cleaned) ? $cleaned : 'بدون توضیحات';
-    }
-
-    protected function cleanXmlContent($xmlContent)
-    {
-        // حذف BOM (Byte Order Mark)
-        $xmlContent = preg_replace('/^\xEF\xBB\xBF/', '', $xmlContent);
-        // حذف کاراکترهای غیر UTF-8
-        $xmlContent = preg_replace('/[^\x{0009}\x{000A}\x{000D}\x{0020}-\x{D7FF}\x{E000}-\x{FFFD}]+/u', '', $xmlContent);
-        // اطمینان از UTF-8 encoding
-        if (!mb_check_encoding($xmlContent, 'UTF-8')) {
-            $xmlContent = mb_convert_encoding($xmlContent, 'UTF-8', 'auto');
-        }
-        // اضافه کردن XML declaration اگه وجود نداشته باشه
-        if (!preg_match('/^<\?xml\s+version=/i', $xmlContent)) {
-            $xmlContent = '<?xml version="1.0" encoding="UTF-8"?>' . "\n" . $xmlContent;
-        }
-        return $xmlContent;
     }
 
     protected function getFeedData($item, $namespaces, $tag, $fallbackTag = null)
@@ -325,6 +441,35 @@ class TelegramHandler
         if (!($item instanceof \SimpleXMLElement)) {
             Log::error("Invalid item type in getFeedData, expected SimpleXMLElement, got " . gettype($item));
             return $tag === 'link' ? '#' : 'بدون ' . $tag;
+        }
+
+        if ($tag === 'description') {
+            $contentSources = [
+                ['namespace' => 'content', 'tag' => 'encoded'],
+                ['namespace' => null, 'tag' => 'description'],
+                ['namespace' => null, 'tag' => 'summary'],
+                ['namespace' => null, 'tag' => 'content']
+            ];
+            foreach ($contentSources as $source) {
+                if ($source['namespace'] && isset($namespaces[$source['namespace']])) {
+                    $value = (string)$item->children($namespaces[$source['namespace']])->{$source['tag']};
+                } else {
+                    $value = isset($item->{$source['tag']}) ? (string)$item->{$source['tag']} : '';
+                }
+                if ($value !== '') {
+                    $cleaned = $this->cleanDescription($value);
+                    Log::debug("Using {$source['tag']} for description", ['raw' => substr($value, 0, 500)]);
+                    if ($cleaned !== 'بدون توضیحات') {
+                        return $cleaned;
+                    }
+                }
+            }
+            // Fallback to page content
+            $link = $this->getFeedData($item, $namespaces, 'link', 'identifier');
+            if ($link !== '#') {
+                return $this->extractDescriptionFromPage($link);
+            }
+            return 'بدون توضیحات';
         }
 
         if (isset($item->$tag)) {
@@ -343,13 +488,11 @@ class TelegramHandler
             return $value !== '' ? $value : 'بدون ' . $tag;
         }
 
-        if ($tag === 'link') {
-            if (isset($namespaces['atom']) && $item->children($namespaces['atom'])->link) {
-                $link = $item->children($namespaces['atom'])->link;
-                if (isset($link->attributes()->href)) {
-                    $value = (string)$link->attributes()->href;
-                    return $value !== '' ? $value : '#';
-                }
+        if ($tag === 'link' && isset($namespaces['atom']) && $item->children($namespaces['atom'])->link) {
+            $link = $item->children($namespaces['atom'])->link;
+            if (isset($link->attributes()->href)) {
+                $value = (string)$link->attributes()->href;
+                return $value !== '' ? $value : '#';
             }
         }
 
@@ -369,11 +512,10 @@ class TelegramHandler
     protected function isRecent($pubDate)
     {
         try {
-            $pubDateTime = new DateTime($pubDate);
-            $pubDateTime->setTimezone(new DateTimeZone('GMT')); // تبدیل به GMT
+            $pubDateTime = new DateTime($pubDate, new DateTimeZone('GMT'));
             $now = new DateTime('now', new DateTimeZone('GMT'));
             $interval = $now->getTimestamp() - $pubDateTime->getTimestamp();
-            $isRecent = $interval <= 10 * 60; // 10 دقیقه
+            $isRecent = $interval <= 10 * 60;
             if (!$isRecent) {
                 Log::debug("Item filtered out due to old pubDate (older than 10 minutes)", ['pubDate' => $pubDate, 'interval' => $interval]);
             }
@@ -387,7 +529,7 @@ class TelegramHandler
     protected function formatJalaliDate($pubDate)
     {
         try {
-            $dateTime = new DateTime($pubDate);
+            $dateTime = new DateTime($pubDate, new DateTimeZone('GMT'));
             $dateTime->setTimezone(new DateTimeZone('Asia/Tehran'));
             $jalali = Jalalian::fromDateTime($dateTime);
             return $jalali->format('l j F Y، H:i');
@@ -397,34 +539,31 @@ class TelegramHandler
         }
     }
 
-    protected function isValidLink($link)
-    {
-        try {
-            $response = $this->httpClient->head($link, ['timeout' => 5]);
-            $status = $response->getStatusCode();
-            if ($status === 200) {
-                return true;
-            }
-            Log::warning("Invalid link skipped: $link", ['status' => $status]);
-            return false;
-        } catch (\Exception $e) {
-            Log::error("Failed to validate link: $link", ['error' => $e->getMessage()]);
-            return false;
-        }
-    }
-
     public function testFeed($url)
     {
         try {
             Log::info("Testing feed: $url for chat_id: {$this->chatId}");
-            $response = $this->httpClient->get($url);
+            $response = null;
+            for ($attempt = 1; $attempt <= 3; $attempt++) {
+                try {
+                    $response = $this->httpClient->get($url);
+                    break;
+                } catch (RequestException $e) {
+                    if ($attempt < 3) {
+                        Log::warning("Retry $attempt for feed $url: {$e->getMessage()}");
+                        sleep($attempt * 2);
+                        continue;
+                    }
+                    throw $e;
+                }
+            }
             $xmlContent = $response->getBody()->getContents();
             $xmlContent = $this->cleanXmlContent($xmlContent);
             $xml = @simplexml_load_string($xmlContent, 'SimpleXMLElement', LIBXML_NOCDATA | LIBXML_NOERROR | LIBXML_NOWARNING);
             if ($xml === false) {
                 $errors = libxml_get_errors();
                 $errorMsg = "Failed to parse XML for feed: $url. Errors: " . json_encode($errors, JSON_UNESCAPED_UNICODE);
-                $xmlSnippet = substr($xmlContent, 0, 500); // لاگ 500 کاراکتر اول XML
+                $xmlSnippet = substr($xmlContent, 0, 500);
                 Log::error($errorMsg, ['chat_id' => $this->chatId, 'xml_snippet' => $xmlSnippet]);
                 return ['status' => 'error', 'message' => $errorMsg];
             }
@@ -444,7 +583,9 @@ class TelegramHandler
                     'link' => $link,
                     'pubDate' => $pubDate,
                     'isRecent' => $this->isRecent($pubDate),
-                    'description' => $description
+                    'description' => $description,
+                    'rawDescription' => (string)$item->description,
+                    'rawContent' => isset($namespaces['content']) ? (string)$item->children($namespaces['content'])->encoded : ''
                 ];
             }
             Log::info("Found $itemCount items in feed: $url for chat_id: {$this->chatId}", ['items' => $itemArray]);
@@ -464,7 +605,7 @@ class TelegramHandler
     protected function sendLatestNews($replyMarkup, $previewOnly = false)
     {
         $startTime = microtime(true);
-        Log::info("Processing sendLatestNews for chat_id: {$this->chatId}", ['previewOnly' => $previewOnly]);
+        Log::info("Processing sendLatestNews for chat_id: {$this->chatId}", ['previewOnly' => $previewOnly, 'auto_send' => $this->config['auto_send']]);
         if (empty($this->config['feeds'])) {
             $this->telegram->sendMessage([
                 'chat_id' => $this->chatId,
@@ -475,7 +616,7 @@ class TelegramHandler
             return;
         }
 
-        set_time_limit(60); // Timeout کلی 60 ثانیه
+        set_time_limit(90);
 
         $sentLinks = $this->loadSentLinks();
         $hasNews = false;
@@ -493,14 +634,15 @@ class TelegramHandler
         $pool = new Pool($this->httpClient, array_map(function ($req) {
             return new Request('GET', $req['url']);
         }, $requests), [
-            'concurrency' => 2, // حداکثر 2 درخواست همزمان
+            'concurrency' => 4,
             'fulfilled' => function ($response, $index) use (&$results, $requests) {
                 $results[$index] = [
                     'status' => 'success',
                     'name' => $requests[$index]['name'],
                     'url' => $requests[$index]['url'],
                     'cacheFile' => $requests[$index]['cacheFile'],
-                    'content' => $response->getBody()->getContents()
+                    'content' => $response->getBody()->getContents(),
+                    'headers' => $response->getHeaders()
                 ];
             },
             'rejected' => function ($reason, $index) use (&$results, $requests) {
@@ -527,31 +669,32 @@ class TelegramHandler
 
             if ($result['status'] === 'error') {
                 Log::error("Failed to load feed content: $name ($url) for chat_id: {$this->chatId}: {$result['error']}");
-                // استفاده از کش قدیمی‌تر (تا 5 دقیقه) در صورت خطا
-                if (Storage::exists($cacheFile) && (time() - Storage::lastModified($cacheFile)) < 300) {
-                    $xmlContent = Storage::get($cacheFile);
-                    Log::info("Using older cached feed content for $name ($url) due to error", ['file' => $cacheFile]);
-                } else {
-                    $this->telegram->sendMessage([
-                        'chat_id' => $this->chatId,
-                        'text' => "خطا در بارگذاری فید $name: {$result['error']}",
-                        'reply_markup' => $replyMarkup
-                    ]);
-                    $inactiveFeeds[] = $name;
-                    continue;
-                }
-            } else {
-                $xmlContent = $this->cleanXmlContent($result['content']);
-                Storage::put($cacheFile, $xmlContent);
-                Log::info("Fetched and cached feed content for $name ($url)", ['file' => $cacheFile, 'length' => strlen($xmlContent)]);
+                $this->telegram->sendMessage([
+                    'chat_id' => $this->chatId,
+                    'text' => "خطا در بارگذاری فید $name: {$result['error']}",
+                    'reply_markup' => $replyMarkup
+                ]);
+                $inactiveFeeds[] = $name;
+                continue;
             }
 
             try {
+                $cacheTTL = 300;
+                $forceRefresh = !Storage::exists($cacheFile) || (time() - Storage::lastModified($cacheFile)) >= $cacheTTL;
+                if (!$forceRefresh) {
+                    $xmlContent = Storage::get($cacheFile);
+                    Log::info("Using cached feed content for $name ($url)", ['file' => $cacheFile]);
+                } else {
+                    $xmlContent = $this->cleanXmlContent($result['content']);
+                    Storage::put($cacheFile, $xmlContent);
+                    Log::info("Fetched and cached feed content for $name ($url)", ['file' => $cacheFile, 'length' => strlen($xmlContent), 'headers' => $result['headers']]);
+                }
+
                 $xml = @simplexml_load_string($xmlContent, 'SimpleXMLElement', LIBXML_NOCDATA | LIBXML_NOERROR | LIBXML_NOWARNING);
                 if ($xml === false) {
                     $errors = libxml_get_errors();
                     $errorMsg = "Failed to parse XML for feed: $name ($url). Errors: " . json_encode($errors, JSON_UNESCAPED_UNICODE);
-                    $xmlSnippet = substr($xmlContent, 0, 500); // لاگ 500 کاراکتر اول XML
+                    $xmlSnippet = substr($xmlContent, 0, 500);
                     Log::error($errorMsg, ['chat_id' => $this->chatId, 'xml_snippet' => $xmlSnippet]);
                     $this->telegram->sendMessage([
                         'chat_id' => $this->chatId,
@@ -569,10 +712,10 @@ class TelegramHandler
                 foreach ($items as $item) {
                     $link = $this->getFeedData($item, $namespaces, 'link', 'identifier');
                     $pubDate = $this->getFeedData($item, $namespaces, 'pubDate', 'date');
-                    if ($this->isRecent($pubDate) && !in_array($link, $sentLinks) && $this->isValidLink($link)) {
+                    if ($this->isRecent($pubDate) && !in_array($link, $sentLinks)) {
                         $latestItems[] = $item;
                     }
-                    if (count($latestItems) >= 5) { // حداکثر 5 خبر
+                    if (count($latestItems) >= 5) {
                         break;
                     }
                 }
@@ -583,6 +726,12 @@ class TelegramHandler
                     }, $latestItems),
                     'pubDates' => array_map(function($item) use ($namespaces) {
                         return (string)$this->getFeedData($item, $namespaces, 'pubDate', 'date');
+                    }, $latestItems),
+                    'rawDescriptions' => array_map(function($item) use ($namespaces) {
+                        return isset($item->description) ? substr((string)$item->description, 0, 500) : '';
+                    }, $latestItems),
+                    'rawContents' => array_map(function($item) use ($namespaces) {
+                        return isset($namespaces['content']) ? substr((string)$item->children($namespaces['content'])->encoded, 0, 500) : '';
                     }, $latestItems)
                 ]);
 
@@ -599,6 +748,7 @@ class TelegramHandler
                     $pubDate = $this->getFeedData($item, $namespaces, 'pubDate', 'date');
                     $description = $this->getFeedData($item, $namespaces, 'description');
                     $jalaliDate = $this->formatJalaliDate($pubDate);
+                    $ogImage = $this->getOgImage($link);
 
                     $linkHtml = $link !== '#' ? "<a href=\"$link\">مشاهده خبر</a>" : 'بدون لینک';
                     $message = "📰 سایت: $name\n🗞️ عنوان: <b>$title</b>\n\n📝 توضیحات: " . htmlspecialchars($description, ENT_QUOTES, 'UTF-8');
@@ -609,11 +759,12 @@ class TelegramHandler
                             'chat_id' => $this->chatId,
                             'text' => $message,
                             'parse_mode' => 'HTML',
-                            'disable_web_page_preview' => true, // غیرفعال کردن پیش‌نمایش برای حل مشکل OG Image
+                            'disable_web_page_preview' => false,
                             'reply_markup' => $replyMarkup
                         ]);
-                        Log::info("Sent news #$index: $title from $name for chat_id: {$this->chatId}", ['link' => $link, 'pubDate' => $pubDate]);
+                        Log::info("Sent news #$index: $title from $name for chat_id: {$this->chatId}", ['link' => $link, 'pubDate' => $pubDate, 'ogImage' => $ogImage, 'description' => $description]);
                         $this->saveSentLink($link);
+                        sleep(1);
                     } catch (\Exception $e) {
                         Log::error("Failed to send news #$index: $title from $name: {$e->getMessage()}");
                     }
@@ -625,7 +776,7 @@ class TelegramHandler
         }
 
         if (!$hasNews) {
-            $text = 'خبری در 10 دقیقه اخیر یافت نشد.';
+            $text = 'هیچ خبر جدیدی در 10 دقیقه اخیر یافت نشد. لطفاً بعداً دوباره تلاش کنید یا فیدها را بررسی کنید.';
             if (!empty($inactiveFeeds)) {
                 $text .= "\nفیدهای بدون خبر جدید: " . implode(', ', $inactiveFeeds);
             }
