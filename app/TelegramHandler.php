@@ -28,11 +28,12 @@ class TelegramHandler
         $this->sentLinksFile = "feeds/sent_{$chatId}.json";
 
         $this->httpClient = new Client([
-            'timeout' => 15,
+            'timeout' => 30, // افزایش timeout به 30 ثانیه
             'verify' => false,
             'headers' => [
                 'User-Agent' => 'Mozilla/5.0 (compatible; LumenRSSBot/1.0; +https://telegram-rss-bot-kmgj.onrender.com)'
-            ]
+            ],
+            'dns' => ['8.8.8.8', '8.8.4.4'] // استفاده از Google DNS
         ]);
         $this->loadConfig();
         $this->initializeSentLinks();
@@ -120,7 +121,7 @@ class TelegramHandler
     protected function saveConfig($config)
     {
         $cleanedFeeds = [];
-        foreach ($config['feeds'] as $name => $url) {
+        for ($config['feeds'] as $name => $url) {
             $cleanedName = $this->normalizeFeedName($name);
             $cleanedFeeds[$cleanedName] = $url;
         }
@@ -285,7 +286,7 @@ class TelegramHandler
             $replyMarkup = json_encode($this->getReplyMarkup());
             $startTime = microtime(true);
             $this->sendLatestNews($replyMarkup, false);
-            Log::info("Auto-send triggered for chat_id: {$this->chatId}", ['duration' => microtime(true) - $startTime]);
+            Log::info("Auto-send completed for chat_id: {$this->chatId}", ['duration' => microtime(true) - $startTime]);
         } else {
             Log::info("Auto-send is disabled for chat_id: {$this->chatId}");
         }
@@ -396,6 +397,22 @@ class TelegramHandler
         }
     }
 
+    protected function isValidLink($link)
+    {
+        try {
+            $response = $this->httpClient->head($link, ['timeout' => 5]);
+            $status = $response->getStatusCode();
+            if ($status === 200) {
+                return true;
+            }
+            Log::warning("Invalid link skipped: $link", ['status' => $status]);
+            return false;
+        } catch (\Exception $e) {
+            Log::error("Failed to validate link: $link", ['error' => $e->getMessage()]);
+            return false;
+        }
+    }
+
     public function testFeed($url)
     {
         try {
@@ -458,7 +475,7 @@ class TelegramHandler
             return;
         }
 
-        set_time_limit(30); // Timeout کلی 30 ثانیه
+        set_time_limit(60); // Timeout کلی 60 ثانیه
 
         $sentLinks = $this->loadSentLinks();
         $hasNews = false;
@@ -510,26 +527,26 @@ class TelegramHandler
 
             if ($result['status'] === 'error') {
                 Log::error("Failed to load feed content: $name ($url) for chat_id: {$this->chatId}: {$result['error']}");
-                $this->telegram->sendMessage([
-                    'chat_id' => $this->chatId,
-                    'text' => "خطا در بارگذاری فید $name: {$result['error']}",
-                    'reply_markup' => $replyMarkup
-                ]);
-                $inactiveFeeds[] = $name;
-                continue;
+                // استفاده از کش قدیمی‌تر (تا 5 دقیقه) در صورت خطا
+                if (Storage::exists($cacheFile) && (time() - Storage::lastModified($cacheFile)) < 300) {
+                    $xmlContent = Storage::get($cacheFile);
+                    Log::info("Using older cached feed content for $name ($url) due to error", ['file' => $cacheFile]);
+                } else {
+                    $this->telegram->sendMessage([
+                        'chat_id' => $this->chatId,
+                        'text' => "خطا در بارگذاری فید $name: {$result['error']}",
+                        'reply_markup' => $replyMarkup
+                    ]);
+                    $inactiveFeeds[] = $name;
+                    continue;
+                }
+            } else {
+                $xmlContent = $this->cleanXmlContent($result['content']);
+                Storage::put($cacheFile, $xmlContent);
+                Log::info("Fetched and cached feed content for $name ($url)", ['file' => $cacheFile, 'length' => strlen($xmlContent)]);
             }
 
             try {
-                $cacheTTL = 120; // 2 دقیقه
-                if (Storage::exists($cacheFile) && (time() - Storage::lastModified($cacheFile)) < $cacheTTL) {
-                    $xmlContent = Storage::get($cacheFile);
-                    Log::info("Using cached feed content for $name ($url)", ['file' => $cacheFile]);
-                } else {
-                    $xmlContent = $this->cleanXmlContent($result['content']);
-                    Storage::put($cacheFile, $xmlContent);
-                    Log::info("Fetched and cached feed content for $name ($url)", ['file' => $cacheFile, 'length' => strlen($xmlContent)]);
-                }
-
                 $xml = @simplexml_load_string($xmlContent, 'SimpleXMLElement', LIBXML_NOCDATA | LIBXML_NOERROR | LIBXML_NOWARNING);
                 if ($xml === false) {
                     $errors = libxml_get_errors();
@@ -552,7 +569,7 @@ class TelegramHandler
                 foreach ($items as $item) {
                     $link = $this->getFeedData($item, $namespaces, 'link', 'identifier');
                     $pubDate = $this->getFeedData($item, $namespaces, 'pubDate', 'date');
-                    if ($this->isRecent($pubDate) && !in_array($link, $sentLinks)) {
+                    if ($this->isRecent($pubDate) && !in_array($link, $sentLinks) && $this->isValidLink($link)) {
                         $latestItems[] = $item;
                     }
                     if (count($latestItems) >= 5) { // حداکثر 5 خبر
@@ -592,7 +609,7 @@ class TelegramHandler
                             'chat_id' => $this->chatId,
                             'text' => $message,
                             'parse_mode' => 'HTML',
-                            'disable_web_page_preview' => false,
+                            'disable_web_page_preview' => true, // غیرفعال کردن پیش‌نمایش برای حل مشکل OG Image
                             'reply_markup' => $replyMarkup
                         ]);
                         Log::info("Sent news #$index: $title from $name for chat_id: {$this->chatId}", ['link' => $link, 'pubDate' => $pubDate]);
