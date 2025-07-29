@@ -34,12 +34,13 @@ class TelegramHandler
             'timeout' => 90,
             'connect_timeout' => 15,
             'verify' => false,
-            'proxy' => env('HTTP_PROXY', ''),
+            'proxy' => env('HTTP_PROXY', 'http://YOUR_PROXY_ADDRESS:PORT'), // پراکسی رو اینجا ست کن
             'headers' => [
                 'User-Agent' => 'TelegramBot/1.0 (+https://core.telegram.org/bots)',
                 'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
                 'Accept-Language' => 'en-US,en;q=0.5',
-                'X-Telegram-Bot' => 'LumenRSSBot/1.0'
+                'X-Telegram-Bot' => 'LumenRSSBot/1.0',
+                'Cache-Control' => 'max-age=3600' // کش 1 ساعته برای تلگرام
             ]
         ]);
         $this->loadConfig();
@@ -223,6 +224,15 @@ class TelegramHandler
                     }
                 }
                 $image = !empty($foundImages) ? $foundImages[0] : $this->defaultImage;
+                if ($image !== $this->defaultImage) {
+                    // چک کن که تصویر قابل لود شدن باشه
+                    try {
+                        $this->httpClient->head($image);
+                    } catch (\Exception $e) {
+                        Log::warning("Invalid og:image URL $image for $url: {$e->getMessage()}");
+                        $image = $this->defaultImage;
+                    }
+                }
                 $cache[$url] = ['image' => $image, 'timestamp' => time()];
                 $this->saveImageCache($cache);
                 Log::info("Found og:image for $url", ['image' => $image, 'foundImages' => $foundImages]);
@@ -430,9 +440,14 @@ class TelegramHandler
             $replyMarkup = json_encode($this->getReplyMarkup());
             $startTime = microtime(true);
             $this->sendLatestNews($replyMarkup, false);
-            Log::info("Auto-send triggered for chat_id: {$this->chatId}", ['duration' => microtime(true) - $startTime]);
+            Log::info("Auto-send completed for chat_id: {$this->chatId}", ['duration' => microtime(true) - $startTime]);
         } else {
             Log::info("Auto-send is disabled for chat_id: {$this->chatId}");
+            $this->telegram->sendMessage([
+                'chat_id' => $this->chatId,
+                'text' => 'ارسال خودکار غیرفعاله. لطفاً "شروع فیدها" رو بزنید.',
+                'reply_markup' => json_encode($this->getReplyMarkup())
+            ]);
         }
     }
 
@@ -775,7 +790,7 @@ class TelegramHandler
             }
         }
 
-        if (!$hasNews) {
+        if (!$hasNews && !$previewOnly) {
             $text = 'هیچ خبر جدیدی در 10 دقیقه اخیر یافت نشد. لطفاً بعداً دوباره تلاش کنید یا فیدها را بررسی کنید.';
             if (!empty($inactiveFeeds)) {
                 $text .= "\nفیدهای بدون خبر جدید: " . implode(', ', $inactiveFeeds);
@@ -788,7 +803,7 @@ class TelegramHandler
             Log::info("No recent news found within 10 minutes for any feed for chat_id: {$this->chatId}", ['inactiveFeeds' => $inactiveFeeds]);
         }
 
-        Log::info("Finished sendLatestNews for chat_id: {$this->chatId}", ['duration' => microtime(true) - $startTime]);
+        Log::info("Finished sendLatestNews for chat_id: {$this->chatId}", ['duration' => microtime(true) - $startTime, 'hasNews' => $hasNews]);
     }
 
     public function getConfig()

@@ -35,6 +35,7 @@ $router->get('/check-feeds', function () use ($router) {
             if ($config['auto_send'] === true) {
                 $handler->checkAndSendFeeds();
                 $processedChats[] = $chatId;
+                Log::info("Processed feeds for chat_id: $chatId", ['config' => $config]);
             } else {
                 Log::info("Skipping chat_id: $chatId due to auto_send being disabled");
             }
@@ -47,7 +48,7 @@ $router->get('/check-feeds', function () use ($router) {
         'status' => 'ok',
         'processed_chats' => $processedChats,
         'message' => 'Feed check completed for ' . count($processedChats) . ' chats'
-    ], 200);
+    ], 200, ['Cache-Control' => 'no-cache']);
 });
 
 $router->get('/test-feed', function () use ($router) {
