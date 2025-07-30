@@ -1,4 +1,3 @@
-```dockerfile
 FROM php:8.2-fpm-alpine
 
 # نصب پکیج‌های مورد نیاز
