@@ -1,7 +1,7 @@
 <?php
-use App\TelegramHandler;
+use Laravel\Lumen\Routing\Router;
 use Telegram\Bot\Api;
-use Illuminate\Support\Facades\Storage;
+use App\TelegramHandler;
 use Illuminate\Support\Facades\Log;
 
 $router->get('/', function () use ($router) {
@@ -11,17 +11,13 @@ $router->get('/', function () use ($router) {
 $router->post('/telegram/webhook', function () use ($router) {
     $telegram = new Api(env('TELEGRAM_BOT_TOKEN'));
     $update = $telegram->getWebhookUpdate();
-    $chatId = $update['message']['chat']['id'] ?? null;
-
-    if ($chatId) {
-        $handler = new TelegramHandler($telegram, (string)$chatId);
-        $handler->handleMessage($update['message']);
-    }
-
-    return response('OK', 200);
+    $handler = new TelegramHandler($telegram, $update['message']['chat']['id']);
+    $handler->handle($update);
+    return response()->json(['status' => 'ok']);
 });
 
 $router->get('/check-feeds', function () use ($router) {
+    set_time_limit(150); // افزایش به 150 ثانیه
     $telegram = new Api(env('TELEGRAM_BOT_TOKEN'));
     $feedFiles = Storage::files('feeds');
     $processedChats = [];
@@ -53,15 +49,11 @@ $router->get('/check-feeds', function () use ($router) {
 });
 
 $router->get('/test-feed', function () use ($router) {
-    $telegram = new Api(env('TELEGRAM_BOT_TOKEN'));
-    $url = $router->app->request->query('url');
-    $chatId = $router->app->request->query('chat_id', '1428476584');
-
-    if (!$url || !filter_var($url, FILTER_VALIDATE_URL)) {
-        return response()->json(['status' => 'error', 'message' => 'Invalid or missing URL'], 400);
+    $url = request()->input('url');
+    $chatId = request()->input('chat_id');
+    if (!$url || !$chatId) {
+        return response()->json(['status' => 'error', 'message' => 'Missing url or chat_id'], 400);
     }
-
-    $handler = new TelegramHandler($telegram, $chatId);
-    $result = $handler->testFeed($url);
-    return response()->json($result);
+    $feedManager = new App\FeedManager($chatId);
+    return response()->json($feedManager->testFeed($url));
 });
