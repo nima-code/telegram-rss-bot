@@ -24,8 +24,8 @@ class FeedManager
         $this->chatId = $chatId;
         $this->imageCacheFile = "feeds/image_cache_{$chatId}.json";
         $this->httpClient = new Client([
-            'timeout' => 150, // افزایش به 150 ثانیه
-            'connect_timeout' => 30, // افزایش به 30 ثانیه
+            'timeout' => 120,
+            'connect_timeout' => 20,
             'verify' => false,
             'proxy' => env('HTTP_PROXY', ''),
             'headers' => [
@@ -36,33 +36,46 @@ class FeedManager
             ]
         ]);
         $this->initializeImageCache();
-        Log::info("FeedManager initialized for chat_id: {$this->chatId}", ['timeout' => 150]);
+        Log::info("FeedManager initialized", ['chat_id' => $this->chatId]);
     }
 
     protected function initializeImageCache()
     {
-        if (!Storage::exists($this->imageCacheFile)) {
-            Storage::put($this->imageCacheFile, json_encode([], JSON_UNESCAPED_UNICODE));
-            Log::info("Initialized image cache file", ['file' => $this->imageCacheFile]);
-        }
-        if (!Storage::exists($this->localImagePath)) {
-            Storage::makeDirectory($this->localImagePath);
-            Log::info("Created local image directory", ['path' => $this->localImagePath]);
+        try {
+            if (!Storage::exists($this->imageCacheFile)) {
+                Storage::put($this->imageCacheFile, json_encode([], JSON_UNESCAPED_UNICODE));
+                Log::info("Initialized image cache file", ['file' => $this->imageCacheFile]);
+            }
+            if (!Storage::exists($this->localImagePath)) {
+                Storage::makeDirectory($this->localImagePath);
+                Log::info("Created local image directory", ['path' => $this->localImagePath]);
+            }
+        } catch (\Exception $e) {
+            Log::error("Failed to initialize image cache", ['error' => $e->getMessage()]);
         }
     }
 
     protected function loadImageCache()
     {
-        if (Storage::exists($this->imageCacheFile)) {
-            return json_decode(Storage::get($this->imageCacheFile), true) ?? [];
+        try {
+            if (Storage::exists($this->imageCacheFile)) {
+                return json_decode(Storage::get($this->imageCacheFile), true) ?? [];
+            }
+            return [];
+        } catch (\Exception $e) {
+            Log::error("Failed to load image cache", ['error' => $e->getMessage()]);
+            return [];
         }
-        return [];
     }
 
     protected function saveImageCache($cache)
     {
-        Storage::put($this->imageCacheFile, json_encode($cache, JSON_UNESCAPED_UNICODE));
-        Log::info("Saved image cache", ['cache_size' => count($cache)]);
+        try {
+            Storage::put($this->imageCacheFile, json_encode($cache, JSON_UNESCAPED_UNICODE));
+            Log::info("Saved image cache", ['cache_size' => count($cache)]);
+        } catch (\Exception $e) {
+            Log::error("Failed to save image cache", ['error' => $e->getMessage()]);
+        }
     }
 
     protected function cacheImageLocally($imageUrl)
@@ -71,12 +84,12 @@ class FeedManager
         $localPath = $this->localImagePath . $filename;
         $publicUrl = env('APP_URL') . '/images/' . $filename;
 
-        if (Storage::exists($localPath) && (time() - Storage::lastModified($localPath)) < 86400) {
-            Log::info("Using cached local image", ['imageUrl' => $imageUrl, 'publicUrl' => $publicUrl]);
-            return $publicUrl;
-        }
-
         try {
+            if (Storage::exists($localPath) && (time() - Storage::lastModified($localPath)) < 86400) {
+                Log::info("Using cached local image", ['imageUrl' => $imageUrl, 'publicUrl' => $publicUrl]);
+                return $publicUrl;
+            }
+
             $response = $this->httpClient->get($imageUrl);
             $imageContent = $response->getBody()->getContents();
             Storage::put($localPath, $imageContent);
@@ -90,48 +103,40 @@ class FeedManager
 
     protected function getOgImage($url)
     {
-        Log::info("Fetching og:image for URL", ['url' => $url]);
+        Log::info("Fetching og:image", ['url' => $url]);
         $cache = $this->loadImageCache();
         if (isset($cache[$url]) && (time() - $cache[$url]['timestamp']) < 3600) {
             Log::info("Using cached og:image", ['url' => $url, 'image' => $cache[$url]['image']]);
             return $this->cacheImageLocally($cache[$url]['image']);
         }
 
-        for ($attempt = 1; $attempt <= 3; $attempt++) {
-            try {
-                $response = $this->httpClient->get($url);
-                $html = $response->getBody()->getContents();
-                $metaTags = [
-                    '/<meta\s+property="og:image"\s+content="([^"]+\.(jpg|jpeg|png))"/i',
-                    '/<meta\s+property="og:image:secure_url"\s+content="([^"]+\.(jpg|jpeg|png))"/i',
-                    '/<meta\s+name="twitter:image"\s+content="([^"]+\.(jpg|jpeg|png))"/i',
-                    '/<img\s+src="([^"]+\.(jpg|jpeg|png))"[^>]*>/i'
-                ];
-                $foundImages = [];
-                foreach ($metaTags as $pattern) {
-                    if (preg_match_all($pattern, $html, $matches)) {
-                        $foundImages = array_merge($foundImages, $matches[1]);
-                    }
+        try {
+            $response = $this->httpClient->get($url);
+            $html = $response->getBody()->getContents();
+            $metaTags = [
+                '/<meta\s+property="og:image"\s+content="([^"]+\.(jpg|jpeg|png))"/i',
+                '/<meta\s+property="og:image:secure_url"\s+content="([^"]+\.(jpg|jpeg|png))"/i',
+                '/<meta\s+name="twitter:image"\s+content="([^"]+\.(jpg|jpeg|png))"/i',
+                '/<img\s+src="([^"]+\.(jpg|jpeg|png))"[^>]*>/i'
+            ];
+            $foundImages = [];
+            foreach ($metaTags as $pattern) {
+                if (preg_match_all($pattern, $html, $matches)) {
+                    $foundImages = array_merge($foundImages, $matches[1]);
                 }
-                $image = !empty($foundImages) ? $foundImages[0] : $this->defaultImage;
-                $cachedImage = $this->cacheImageLocally($image);
-                $cache[$url] = ['image' => $image, 'timestamp' => time()];
-                $this->saveImageCache($cache);
-                Log::info("Found og:image", ['url' => $url, 'image' => $image]);
-                return $cachedImage;
-            } catch (\Exception $e) {
-                Log::warning("Retry $attempt for og:image", ['url' => $url, 'error' => $e->getMessage()]);
-                if ($attempt < 3) {
-                    sleep($attempt * 2);
-                    continue;
-                }
-                Log::error("Failed to fetch og:image, using default", ['url' => $url, 'error' => $e->getMessage()]);
-                $cache[$url] = ['image' => $this->defaultImage, 'timestamp' => time()];
-                $this->saveImageCache($cache);
-                return $this->defaultImage;
             }
+            $image = !empty($foundImages) ? $foundImages[0] : $this->defaultImage;
+            $cachedImage = $this->cacheImageLocally($image);
+            $cache[$url] = ['image' => $image, 'timestamp' => time()];
+            $this->saveImageCache($cache);
+            Log::info("Found og:image", ['url' => $url, 'image' => $image]);
+            return $cachedImage;
+        } catch (\Exception $e) {
+            Log::warning("Failed to fetch og:image, using default", ['url' => $url, 'error' => $e->getMessage()]);
+            $cache[$url] = ['image' => $this->defaultImage, 'timestamp' => time()];
+            $this->saveImageCache($cache);
+            return $this->defaultImage;
         }
-        return $this->defaultImage;
     }
 
     protected function extractDescriptionFromPage($url)
@@ -380,7 +385,7 @@ class FeedManager
             return;
         }
 
-        set_time_limit(150); // افزایش زمان اجرا
+        set_time_limit(120);
         $sentLinks = $storageManager->loadSentLinks();
         $hasNews = false;
         $inactiveFeeds = [];
@@ -420,8 +425,18 @@ class FeedManager
             }
         ]);
 
-        $promise = $pool->promise();
-        $promise->wait();
+        try {
+            $promise = $pool->promise();
+            $promise->wait();
+        } catch (\Exception $e) {
+            Log::error("Pool execution failed", ['error' => $e->getMessage()]);
+            $telegram->sendMessage([
+                'chat_id' => $this->chatId,
+                'text' => 'خطا در پردازش فیدها. لطفاً دوباره تلاش کنید.',
+                'reply_markup' => $replyMarkup
+            ]);
+            return;
+        }
 
         foreach ($results as $result) {
             $name = $result['name'];
@@ -470,7 +485,7 @@ class FeedManager
                 $items = $xml->channel->item ?? [];
                 $latestItems = [];
                 foreach ($items as $index => $item) {
-                    if ($index >= 10) break; // محدود به 10 آیتم
+                    if ($index >= 10) break;
                     $link = $this->getFeedData($item, $namespaces, 'link', 'identifier');
                     $pubDate = $this->getFeedData($item, $namespaces, 'pubDate', 'date');
                     if ($this->isRecent($pubDate) && !in_array($link, $sentLinks)) {
@@ -496,7 +511,6 @@ class FeedManager
                     $jalaliDate = $this->formatJalaliDate($pubDate);
                     $ogImage = $this->getOgImage($link);
 
-                    // ساده‌سازی پیام برای Instant View
                     $message = "<b>$name</b>\n";
                     $message .= "$title\n";
                     $message .= "$description\n";
