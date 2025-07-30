@@ -22,6 +22,7 @@ class TelegramHandler
     protected $maxSentLinks = 500;
     protected $defaultImage = 'https://www.khabaronline.ir/assets/khabaronline-logo.png';
     protected $imageCacheFile;
+    protected $localImagePath = 'public/images/';
 
     public function __construct(Api $telegram, string $chatId)
     {
@@ -34,13 +35,12 @@ class TelegramHandler
             'timeout' => 90,
             'connect_timeout' => 15,
             'verify' => false,
-            'proxy' => env('HTTP_PROXY', 'http://YOUR_PROXY_ADDRESS:PORT'), // پراکسی رو اینجا ست کن
+            'proxy' => env('HTTP_PROXY', ''),
             'headers' => [
                 'User-Agent' => 'TelegramBot/1.0 (+https://core.telegram.org/bots)',
                 'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
                 'Accept-Language' => 'en-US,en;q=0.5',
-                'X-Telegram-Bot' => 'LumenRSSBot/1.0',
-                'Cache-Control' => 'max-age=3600' // کش 1 ساعته برای تلگرام
+                'X-Telegram-Bot' => 'LumenRSSBot/1.0'
             ]
         ]);
         $this->loadConfig();
@@ -62,6 +62,10 @@ class TelegramHandler
         if (!Storage::exists($this->imageCacheFile)) {
             Storage::put($this->imageCacheFile, json_encode([], JSON_UNESCAPED_UNICODE));
             Log::info("Initialized image cache file for chat_id: {$this->chatId}", ['file' => $this->imageCacheFile]);
+        }
+        if (!Storage::exists($this->localImagePath)) {
+            Storage::makeDirectory($this->localImagePath);
+            Log::info("Created local image directory for chat_id: {$this->chatId}", ['path' => $this->localImagePath]);
         }
     }
 
@@ -197,12 +201,35 @@ class TelegramHandler
         return $xmlContent;
     }
 
+    protected function cacheImageLocally($imageUrl)
+    {
+        $filename = md5($imageUrl) . '.' . pathinfo($imageUrl, PATHINFO_EXTENSION);
+        $localPath = $this->localImagePath . $filename;
+        $publicUrl = env('APP_URL') . '/images/' . $filename;
+
+        if (Storage::exists($localPath) && (time() - Storage::lastModified($localPath)) < 86400) {
+            Log::info("Using cached local image for $imageUrl", ['localPath' => $localPath, 'publicUrl' => $publicUrl]);
+            return $publicUrl;
+        }
+
+        try {
+            $response = $this->httpClient->get($imageUrl);
+            $imageContent = $response->getBody()->getContents();
+            Storage::put($localPath, $imageContent);
+            Log::info("Cached image locally for $imageUrl", ['localPath' => $localPath, 'publicUrl' => $publicUrl]);
+            return $publicUrl;
+        } catch (\Exception $e) {
+            Log::error("Failed to cache image locally for $imageUrl: {$e->getMessage()}");
+            return $imageUrl;
+        }
+    }
+
     protected function getOgImage($url)
     {
         $cache = $this->loadImageCache();
         if (isset($cache[$url]) && (time() - $cache[$url]['timestamp']) < 3600) {
             Log::info("Using cached og:image for $url", ['image' => $cache[$url]['image']]);
-            return $cache[$url]['image'];
+            return $this->cacheImageLocally($cache[$url]['image']);
         }
 
         for ($attempt = 1; $attempt <= 3; $attempt++) {
@@ -224,19 +251,11 @@ class TelegramHandler
                     }
                 }
                 $image = !empty($foundImages) ? $foundImages[0] : $this->defaultImage;
-                if ($image !== $this->defaultImage) {
-                    // چک کن که تصویر قابل لود شدن باشه
-                    try {
-                        $this->httpClient->head($image);
-                    } catch (\Exception $e) {
-                        Log::warning("Invalid og:image URL $image for $url: {$e->getMessage()}");
-                        $image = $this->defaultImage;
-                    }
-                }
+                $cachedImage = $this->cacheImageLocally($image);
                 $cache[$url] = ['image' => $image, 'timestamp' => time()];
                 $this->saveImageCache($cache);
-                Log::info("Found og:image for $url", ['image' => $image, 'foundImages' => $foundImages]);
-                return $image;
+                Log::info("Found og:image for $url", ['image' => $image, 'foundImages' => $foundImages, 'cachedImage' => $cachedImage]);
+                return $cachedImage;
             } catch (\Exception $e) {
                 Log::warning("Retry $attempt for og:image $url: {$e->getMessage()}");
                 if ($attempt < 3) {
@@ -246,10 +265,10 @@ class TelegramHandler
                 Log::error("Failed to fetch og:image for $url: {$e->getMessage()}");
                 $cache[$url] = ['image' => $this->defaultImage, 'timestamp' => time()];
                 $this->saveImageCache($cache);
-                return $this->defaultImage;
+                return $this->cacheImageLocally($this->defaultImage);
             }
         }
-        return $this->defaultImage;
+        return $this->cacheImageLocally($this->defaultImage);
     }
 
     protected function extractDescriptionFromPage($url)
@@ -435,7 +454,7 @@ class TelegramHandler
 
     public function checkAndSendFeeds()
     {
-        Log::info("Checking feeds for auto-send for chat_id: {$this->chatId}", ['auto_send' => $this->config['auto_send']]);
+        Log::info("Checking feeds for auto-send for chat_id: {$this->chatId}", ['auto_send' => $this->config['auto_send'], 'feeds' => array_keys($this->config['feeds'])]);
         if ($this->config['auto_send'] === true) {
             $replyMarkup = json_encode($this->getReplyMarkup());
             $startTime = microtime(true);
@@ -443,11 +462,6 @@ class TelegramHandler
             Log::info("Auto-send completed for chat_id: {$this->chatId}", ['duration' => microtime(true) - $startTime]);
         } else {
             Log::info("Auto-send is disabled for chat_id: {$this->chatId}");
-            $this->telegram->sendMessage([
-                'chat_id' => $this->chatId,
-                'text' => 'ارسال خودکار غیرفعاله. لطفاً "شروع فیدها" رو بزنید.',
-                'reply_markup' => json_encode($this->getReplyMarkup())
-            ]);
         }
     }
 
@@ -620,7 +634,11 @@ class TelegramHandler
     protected function sendLatestNews($replyMarkup, $previewOnly = false)
     {
         $startTime = microtime(true);
-        Log::info("Processing sendLatestNews for chat_id: {$this->chatId}", ['previewOnly' => $previewOnly, 'auto_send' => $this->config['auto_send']]);
+        Log::info("Processing sendLatestNews for chat_id: {$this->chatId}", [
+            'previewOnly' => $previewOnly, 
+            'auto_send' => $this->config['auto_send'],
+            'feeds' => array_keys($this->config['feeds'])
+        ]);
         if (empty($this->config['feeds'])) {
             $this->telegram->sendMessage([
                 'chat_id' => $this->chatId,
@@ -790,7 +808,7 @@ class TelegramHandler
             }
         }
 
-        if (!$hasNews && !$previewOnly) {
+        if (!$hasNews) {
             $text = 'هیچ خبر جدیدی در 10 دقیقه اخیر یافت نشد. لطفاً بعداً دوباره تلاش کنید یا فیدها را بررسی کنید.';
             if (!empty($inactiveFeeds)) {
                 $text .= "\nفیدهای بدون خبر جدید: " . implode(', ', $inactiveFeeds);
