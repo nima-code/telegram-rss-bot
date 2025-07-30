@@ -36,45 +36,37 @@ class FeedManager
             ]
         ]);
         $this->initializeImageCache();
-        Log::info("FeedManager initialized", ['chat_id' => $this->chatId]);
+        Log::warning("SSL verification disabled for HTTP requests in FeedManager", ['chat_id' => $this->chatId]);
     }
 
     protected function initializeImageCache()
     {
-        try {
-            if (!Storage::exists($this->imageCacheFile)) {
-                Storage::put($this->imageCacheFile, json_encode([], JSON_UNESCAPED_UNICODE));
-                Log::info("Initialized image cache file", ['file' => $this->imageCacheFile]);
-            }
-            if (!Storage::exists($this->localImagePath)) {
-                Storage::makeDirectory($this->localImagePath);
-                Log::info("Created local image directory", ['path' => $this->localImagePath]);
-            }
-        } catch (\Exception $e) {
-            Log::error("Failed to initialize image cache", ['error' => $e->getMessage()]);
+        if (!Storage::exists($this->imageCacheFile)) {
+            Storage::put($this->imageCacheFile, json_encode([], JSON_UNESCAPED_UNICODE));
+            Log::info("Initialized image cache file for chat_id: {$this->chatId}", ['file' => $this->imageCacheFile]);
+        }
+        if (!Storage::exists($this->localImagePath)) {
+            Storage::makeDirectory($this->localImagePath);
+            Log::info("Created local image directory for chat_id: {$this->chatId}", ['path' => $this->localImagePath]);
         }
     }
 
     protected function loadImageCache()
     {
-        try {
-            if (Storage::exists($this->imageCacheFile)) {
-                return json_decode(Storage::get($this->imageCacheFile), true) ?? [];
-            }
-            return [];
-        } catch (\Exception $e) {
-            Log::error("Failed to load image cache", ['error' => $e->getMessage()]);
-            return [];
+        if (Storage::exists($this->imageCacheFile)) {
+            $cache = json_decode(Storage::get($this->imageCacheFile), true);
+            return is_array($cache) ? $cache : [];
         }
+        return [];
     }
 
     protected function saveImageCache($cache)
     {
         try {
             Storage::put($this->imageCacheFile, json_encode($cache, JSON_UNESCAPED_UNICODE));
-            Log::info("Saved image cache", ['cache_size' => count($cache)]);
+            Log::info("Saved image cache for chat_id: {$this->chatId}", ['cache_size' => count($cache)]);
         } catch (\Exception $e) {
-            Log::error("Failed to save image cache", ['error' => $e->getMessage()]);
+            Log::error("Failed to save image cache for chat_id: {$this->chatId}: {$e->getMessage()}");
         }
     }
 
@@ -84,39 +76,47 @@ class FeedManager
         $localPath = $this->localImagePath . $filename;
         $publicUrl = env('APP_URL') . '/images/' . $filename;
 
-        try {
-            if (Storage::exists($localPath) && (time() - Storage::lastModified($localPath)) < 86400) {
-                Log::info("Using cached local image", ['imageUrl' => $imageUrl, 'publicUrl' => $publicUrl]);
-                return $publicUrl;
-            }
+        if (Storage::exists($localPath) && (time() - Storage::lastModified($localPath)) < 86400) {
+            Log::info("Using cached local image for $imageUrl", ['localPath' => $localPath, 'publicUrl' => $publicUrl]);
+            return $publicUrl;
+        }
 
+        try {
             $response = $this->httpClient->get($imageUrl);
             $imageContent = $response->getBody()->getContents();
             Storage::put($localPath, $imageContent);
-            Log::info("Cached image locally", ['imageUrl' => $imageUrl, 'publicUrl' => $publicUrl]);
+            Log::info("Cached image locally for $imageUrl", ['localPath' => $localPath, 'publicUrl' => $publicUrl]);
             return $publicUrl;
         } catch (\Exception $e) {
-            Log::warning("Failed to cache image, using default", ['imageUrl' => $imageUrl, 'error' => $e->getMessage()]);
+            Log::error("Failed to cache image locally for $imageUrl: {$e->getMessage()}");
             return $this->defaultImage;
         }
     }
 
     protected function getOgImage($url)
     {
-        Log::info("Fetching og:image", ['url' => $url]);
         $cache = $this->loadImageCache();
         if (isset($cache[$url]) && (time() - $cache[$url]['timestamp']) < 3600) {
-            Log::info("Using cached og:image", ['url' => $url, 'image' => $cache[$url]['image']]);
+            Log::info("Using cached og:image for $url", ['image' => $cache[$url]['image']]);
             return $this->cacheImageLocally($cache[$url]['image']);
         }
 
         try {
-            $response = $this->httpClient->get($url);
+            $response = $this->httpClient->get($url, ['http_errors' => false]);
+            if ($response->getStatusCode() >= 400) {
+                Log::warning("HTTP error fetching og:image for $url: {$response->getStatusCode()}");
+                $cache[$url] = ['image' => $this->defaultImage, 'timestamp' => time()];
+                $this->saveImageCache($cache);
+                return $this->cacheImageLocally($this->defaultImage);
+            }
+
             $html = $response->getBody()->getContents();
             $metaTags = [
                 '/<meta\s+property="og:image"\s+content="([^"]+\.(jpg|jpeg|png))"/i',
                 '/<meta\s+property="og:image:secure_url"\s+content="([^"]+\.(jpg|jpeg|png))"/i',
                 '/<meta\s+name="twitter:image"\s+content="([^"]+\.(jpg|jpeg|png))"/i',
+                '/<meta\s+property="og:image"\s+content="([^"]+)"/i',
+                '/<meta\s+name="image"\s+content="([^"]+)"/i',
                 '/<img\s+src="([^"]+\.(jpg|jpeg|png))"[^>]*>/i'
             ];
             $foundImages = [];
@@ -125,24 +125,44 @@ class FeedManager
                     $foundImages = array_merge($foundImages, $matches[1]);
                 }
             }
+
             $image = !empty($foundImages) ? $foundImages[0] : $this->defaultImage;
+            if ($image !== $this->defaultImage) {
+                // چک کردن دسترسی‌پذیری تصویر
+                try {
+                    $imageResponse = $this->httpClient->head($image, ['http_errors' => false]);
+                    if ($imageResponse->getStatusCode() >= 400) {
+                        Log::warning("Invalid image URL for $url: $image, using default");
+                        $image = $this->defaultImage;
+                    }
+                } catch (\Exception $e) {
+                    Log::warning("Failed to verify image URL $image: {$e->getMessage()}, using default");
+                    $image = $this->defaultImage;
+                }
+            }
+
             $cachedImage = $this->cacheImageLocally($image);
             $cache[$url] = ['image' => $image, 'timestamp' => time()];
             $this->saveImageCache($cache);
-            Log::info("Found og:image", ['url' => $url, 'image' => $image]);
+            Log::info("Found og:image for $url", ['image' => $image, 'cachedImage' => $cachedImage]);
             return $cachedImage;
         } catch (\Exception $e) {
-            Log::warning("Failed to fetch og:image, using default", ['url' => $url, 'error' => $e->getMessage()]);
+            Log::error("Failed to fetch og:image for $url: {$e->getMessage()}");
             $cache[$url] = ['image' => $this->defaultImage, 'timestamp' => time()];
             $this->saveImageCache($cache);
-            return $this->defaultImage;
+            return $this->cacheImageLocally($this->defaultImage);
         }
     }
 
     protected function extractDescriptionFromPage($url)
     {
         try {
-            $response = $this->httpClient->get($url);
+            $response = $this->httpClient->get($url, ['http_errors' => false]);
+            if ($response->getStatusCode() >= 400) {
+                Log::warning("HTTP error fetching description for $url: {$response->getStatusCode()}");
+                return 'بدون توضیحات';
+            }
+
             $html = $response->getBody()->getContents();
             $doc = new \DOMDocument();
             @$doc->loadHTML('<?xml encoding="UTF-8">' . $html);
@@ -159,10 +179,10 @@ class FeedManager
                 }
             }
             $text = $this->cleanDescription($text);
-            Log::info("Extracted description", ['url' => $url, 'description' => $text]);
+            Log::info("Extracted description from page $url", ['description' => $text]);
             return $text !== '' ? $text : 'بدون توضیحات';
         } catch (\Exception $e) {
-            Log::error("Failed to extract description", ['url' => $url, 'error' => $e->getMessage()]);
+            Log::error("Failed to extract description from page $url: {$e->getMessage()}");
             return 'بدون توضیحات';
         }
     }
@@ -210,7 +230,7 @@ class FeedManager
     protected function getFeedData($item, $namespaces, $tag, $fallbackTag = null)
     {
         if (!($item instanceof \SimpleXMLElement)) {
-            Log::error("Invalid item type in getFeedData", ['tag' => $tag, 'type' => gettype($item)]);
+            Log::error("Invalid item type in getFeedData, expected SimpleXMLElement, got " . gettype($item));
             return $tag === 'link' ? '#' : 'بدون ' . $tag;
         }
 
@@ -286,10 +306,12 @@ class FeedManager
             $now = new DateTime('now', new DateTimeZone('GMT'));
             $interval = $now->getTimestamp() - $pubDateTime->getTimestamp();
             $isRecent = $interval <= 10 * 60;
-            Log::debug("Checking if item is recent", ['pubDate' => $pubDate, 'isRecent' => $isRecent]);
+            if (!$isRecent) {
+                Log::debug("Item filtered out due to old pubDate", ['pubDate' => $pubDate, 'interval' => $interval]);
+            }
             return $isRecent;
         } catch (\Exception $e) {
-            Log::error("Invalid pubDate format", ['pubDate' => $pubDate, 'error' => $e->getMessage()]);
+            Log::error("Invalid pubDate format: $pubDate", ['error' => $e->getMessage()]);
             return false;
         }
     }
@@ -302,7 +324,7 @@ class FeedManager
             $jalali = Jalalian::fromDateTime($dateTime);
             return $jalali->format('l j F Y، H:i');
         } catch (\Exception $e) {
-            Log::error("Failed to convert to Jalali", ['pubDate' => $pubDate, 'error' => $e->getMessage()]);
+            Log::error("Failed to convert pubDate to Jalali: $pubDate", ['error' => $e->getMessage()]);
             return $pubDate;
         }
     }
@@ -310,15 +332,18 @@ class FeedManager
     public function testFeed($url)
     {
         try {
-            Log::info("Testing feed", ['url' => $url, 'chat_id' => $this->chatId]);
+            Log::info("Testing feed: $url for chat_id: {$this->chatId}");
             $response = null;
             for ($attempt = 1; $attempt <= 3; $attempt++) {
                 try {
-                    $response = $this->httpClient->get($url);
+                    $response = $this->httpClient->get($url, ['http_errors' => false]);
+                    if ($response->getStatusCode() >= 400) {
+                        throw new RequestException("HTTP {$response->getStatusCode()}", new Request('GET', $url));
+                    }
                     break;
                 } catch (RequestException $e) {
                     if ($attempt < 3) {
-                        Log::warning("Retry $attempt for feed", ['url' => $url, 'error' => $e->getMessage()]);
+                        Log::warning("Retry $attempt for feed $url: {$e->getMessage()}");
                         sleep($attempt * 2);
                         continue;
                     }
@@ -331,7 +356,7 @@ class FeedManager
             if ($xml === false) {
                 $errors = libxml_get_errors();
                 $errorMsg = "Failed to parse XML for feed: $url. Errors: " . json_encode($errors, JSON_UNESCAPED_UNICODE);
-                Log::error($errorMsg, ['xml_snippet' => substr($xmlContent, 0, 500)]);
+                Log::error($errorMsg, ['chat_id' => $this->chatId, 'xml_snippet' => substr($xmlContent, 0, 500)]);
                 return ['status' => 'error', 'message' => $errorMsg];
             }
             libxml_clear_errors();
@@ -355,7 +380,8 @@ class FeedManager
                     'rawContent' => isset($namespaces['content']) ? (string)$item->children($namespaces['content'])->encoded : ''
                 ];
             }
-            Log::info("Feed test completed", ['url' => $url, 'item_count' => $itemCount]);
+            Log::info("Found $itemCount items in feed: $url for chat_id: {$this->chatId}", ['items' => $itemArray]);
+
             return [
                 'status' => 'success',
                 'item_count' => $itemCount,
@@ -363,7 +389,7 @@ class FeedManager
             ];
         } catch (RequestException $e) {
             $errorMsg = $e->hasResponse() ? $e->getResponse()->getStatusCode() . ' ' . $e->getResponse()->getReasonPhrase() : $e->getMessage();
-            Log::error("Failed to load feed", ['url' => $url, 'error' => $errorMsg]);
+            Log::error("Failed to load feed content: $url for chat_id: {$this->chatId}: $errorMsg");
             return ['status' => 'error', 'message' => "Failed to load feed: $errorMsg"];
         }
     }
@@ -373,15 +399,21 @@ class FeedManager
         $startTime = microtime(true);
         $storageManager = new StorageManager($this->chatId);
         $config = $storageManager->loadConfig();
-        Log::info("Starting sendLatestNews", ['chat_id' => $this->chatId, 'previewOnly' => $previewOnly, 'feeds' => array_keys($config['feeds'])]);
+        Log::info("Processing sendLatestNews for chat_id: {$this->chatId}", [
+            'previewOnly' => $previewOnly,
+            'auto_send' => $config['auto_send'],
+            'feeds' => array_keys($config['feeds'])
+        ]);
 
         if (empty($config['feeds'])) {
             $telegram->sendMessage([
                 'chat_id' => $this->chatId,
                 'text' => 'هیچ فیدی ثبت نشده. لطفاً با "تغییر فید" یه فید اضافه کنید.',
-                'reply_markup' => $replyMarkup
+                'reply_markup' => $replyMarkup,
+                'parse_mode' => 'HTML',
+                'disable_web_page_preview' => false
             ]);
-            Log::info("No feeds configured", ['chat_id' => $this->chatId]);
+            Log::info("No feeds for chat_id: {$this->chatId}");
             return;
         }
 
@@ -408,7 +440,8 @@ class FeedManager
                     'name' => $requests[$index]['name'],
                     'url' => $requests[$index]['url'],
                     'cacheFile' => $requests[$index]['cacheFile'],
-                    'content' => $response->getBody()->getContents()
+                    'content' => $response->getBody()->getContents(),
+                    'headers' => $response->getHeaders()
                 ];
             },
             'rejected' => function ($reason, $index) use (&$results, $requests) {
@@ -425,18 +458,8 @@ class FeedManager
             }
         ]);
 
-        try {
-            $promise = $pool->promise();
-            $promise->wait();
-        } catch (\Exception $e) {
-            Log::error("Pool execution failed", ['error' => $e->getMessage()]);
-            $telegram->sendMessage([
-                'chat_id' => $this->chatId,
-                'text' => 'خطا در پردازش فیدها. لطفاً دوباره تلاش کنید.',
-                'reply_markup' => $replyMarkup
-            ]);
-            return;
-        }
+        $promise = $pool->promise();
+        $promise->wait();
 
         foreach ($results as $result) {
             $name = $result['name'];
@@ -444,11 +467,13 @@ class FeedManager
             $cacheFile = $result['cacheFile'];
 
             if ($result['status'] === 'error') {
-                Log::error("Failed to load feed", ['name' => $name, 'url' => $url, 'error' => $result['error']]);
+                Log::error("Failed to load feed content: $name ($url) for chat_id: {$this->chatId}: {$result['error']}");
                 $telegram->sendMessage([
                     'chat_id' => $this->chatId,
                     'text' => "خطا در بارگذاری فید $name: {$result['error']}",
-                    'reply_markup' => $replyMarkup
+                    'reply_markup' => $replyMarkup,
+                    'parse_mode' => 'HTML',
+                    'disable_web_page_preview' => false
                 ]);
                 $inactiveFeeds[] = $name;
                 continue;
@@ -459,22 +484,24 @@ class FeedManager
                 $forceRefresh = !Storage::exists($cacheFile) || (time() - Storage::lastModified($cacheFile)) >= $cacheTTL;
                 if (!$forceRefresh) {
                     $xmlContent = Storage::get($cacheFile);
-                    Log::info("Using cached feed", ['name' => $name, 'file' => $cacheFile]);
+                    Log::info("Using cached feed content for $name ($url)", ['file' => $cacheFile]);
                 } else {
                     $xmlContent = $this->cleanXmlContent($result['content']);
                     Storage::put($cacheFile, $xmlContent);
-                    Log::info("Fetched and cached feed", ['name' => $name, 'file' => $cacheFile]);
+                    Log::info("Fetched and cached feed content for $name ($url)", ['file' => $cacheFile, 'length' => strlen($xmlContent)]);
                 }
 
                 $xml = @simplexml_load_string($xmlContent, 'SimpleXMLElement', LIBXML_NOCDATA | LIBXML_NOERROR | LIBXML_NOWARNING);
                 if ($xml === false) {
                     $errors = libxml_get_errors();
                     $errorMsg = "Failed to parse XML for feed: $name ($url). Errors: " . json_encode($errors, JSON_UNESCAPED_UNICODE);
-                    Log::error($errorMsg, ['xml_snippet' => substr($xmlContent, 0, 500)]);
+                    Log::error($errorMsg, ['chat_id' => $this->chatId, 'xml_snippet' => substr($xmlContent, 0, 500)]);
                     $telegram->sendMessage([
                         'chat_id' => $this->chatId,
                         'text' => "خطا در پارس XML فید $name",
-                        'reply_markup' => $replyMarkup
+                        'reply_markup' => $replyMarkup,
+                        'parse_mode' => 'HTML',
+                        'disable_web_page_preview' => false
                     ]);
                     $inactiveFeeds[] = $name;
                     libxml_clear_errors();
@@ -496,10 +523,19 @@ class FeedManager
                     }
                 }
 
+                Log::info("Processing $name: Selected " . count($latestItems) . " items for sending", [
+                    'titles' => array_map(function($item) use ($namespaces) {
+                        return (string)$this->getFeedData($item, $namespaces, 'title', 'title');
+                    }, $latestItems),
+                    'pubDates' => array_map(function($item) use ($namespaces) {
+                        return (string)$this->getFeedData($item, $namespaces, 'pubDate', 'date');
+                    }, $latestItems)
+                ]);
+
                 if (!empty($latestItems)) {
                     $hasNews = true;
                 } else {
-                    Log::info("No recent items found", ['name' => $name, 'url' => $url]);
+                    Log::info("No recent items found for $name ($url) within 10 minutes");
                     $inactiveFeeds[] = $name;
                 }
 
@@ -511,11 +547,12 @@ class FeedManager
                     $jalaliDate = $this->formatJalaliDate($pubDate);
                     $ogImage = $this->getOgImage($link);
 
-                    $message = "<b>$name</b>\n";
-                    $message .= "$title\n";
-                    $message .= "$description\n";
+                    $linkHtml = $link !== '#' ? "<a href=\"$link\">مشاهده خبر</a>" : 'بدون لینک';
+                    $message = "<b>📰 $name</b>\n";
+                    $message .= "<b>$title</b>\n\n";
+                    $message .= "$description\n\n";
                     $message .= "🕒 $jalaliDate\n";
-                    $message .= "<a href=\"$link\">مشاهده خبر</a>";
+                    $message .= "$linkHtml";
 
                     try {
                         $telegram->sendPhoto([
@@ -526,41 +563,47 @@ class FeedManager
                             'disable_web_page_preview' => false,
                             'reply_markup' => $replyMarkup
                         ]);
-                        Log::info("Sent news with photo", ['index' => $index, 'title' => $title, 'name' => $name, 'ogImage' => $ogImage]);
+                        Log::info("Sent news #$index: $title from $name for chat_id: {$this->chatId}", ['link' => $link, 'pubDate' => $pubDate, 'ogImage' => $ogImage]);
                         $storageManager->saveSentLink($link);
                         sleep(1);
                     } catch (\Exception $e) {
-                        Log::warning("Failed to send photo, falling back to message", ['index' => $index, 'title' => $title, 'error' => $e->getMessage()]);
-                        $telegram->sendMessage([
-                            'chat_id' => $this->chatId,
-                            'text' => $message,
-                            'parse_mode' => 'HTML',
-                            'disable_web_page_preview' => false,
-                            'reply_markup' => $replyMarkup
-                        ]);
-                        Log::info("Sent news without photo", ['index' => $index, 'title' => $title, 'name' => $name]);
-                        $storageManager->saveSentLink($link);
+                        Log::error("Failed to send news #$index with photo: $title from $name: {$e->getMessage()}");
+                        try {
+                            $telegram->sendMessage([
+                                'chat_id' => $this->chatId,
+                                'text' => $message,
+                                'parse_mode' => 'HTML',
+                                'disable_web_page_preview' => false,
+                                'reply_markup' => $replyMarkup
+                            ]);
+                            Log::info("Sent news #$index without photo: $title from $name for chat_id: {$this->chatId}", ['link' => $link]);
+                            $storageManager->saveSentLink($link);
+                        } catch (\Exception $e2) {
+                            Log::error("Failed to send news #$index without photo: $title from $name: {$e2->getMessage()}");
+                        }
                     }
                 }
             } catch (\Exception $e) {
-                Log::error("Error processing feed", ['name' => $name, 'url' => $url, 'error' => $e->getMessage()]);
+                Log::error("Error processing feed $name ($url) for chat_id: {$this->chatId}: {$e->getMessage()}");
                 $inactiveFeeds[] = $name;
             }
         }
 
         if (!$hasNews) {
-            $text = 'هیچ خبر جدیدی در 10 دقیقه اخیر یافت نشد.';
+            $text = 'هیچ خبر جدیدی در 10 دقیقه اخیر یافت نشد. لطفاً بعداً دوباره تلاش کنید یا فیدها را بررسی کنید.';
             if (!empty($inactiveFeeds)) {
-                $text .= "\nفیدهای بدون خبر: " . implode(', ', $inactiveFeeds);
+                $text .= "\nفیدهای بدون خبر جدید: " . implode(', ', $inactiveFeeds);
             }
             $telegram->sendMessage([
                 'chat_id' => $this->chatId,
                 'text' => $text,
-                'reply_markup' => $replyMarkup
+                'reply_markup' => $replyMarkup,
+                'parse_mode' => 'HTML',
+                'disable_web_page_preview' => false
             ]);
-            Log::info("No recent news found", ['chat_id' => $this->chatId, 'inactiveFeeds' => $inactiveFeeds]);
+            Log::info("No recent news found within 10 minutes for any feed for chat_id: {$this->chatId}", ['inactiveFeeds' => $inactiveFeeds]);
         }
 
-        Log::info("Finished sendLatestNews", ['chat_id' => $this->chatId, 'duration' => microtime(true) - $startTime]);
+        Log::info("Finished sendLatestNews for chat_id: {$this->chatId}", ['duration' => microtime(true) - $startTime, 'hasNews' => $hasNews]);
     }
 }
