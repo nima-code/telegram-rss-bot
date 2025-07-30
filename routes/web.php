@@ -26,7 +26,7 @@ $router->post('/telegram/webhook', function () use ($router) {
 });
 
 $router->get('/check-feeds', function () use ($router) {
-    set_time_limit(180); // افزایش به 180 ثانیه
+    set_time_limit(120); // جلوگیری از تایم‌اوت
     try {
         $telegram = new Api(env('TELEGRAM_BOT_TOKEN'));
         $feedFiles = Storage::files('feeds');
@@ -58,7 +58,7 @@ $router->get('/check-feeds', function () use ($router) {
         ], 200, ['Cache-Control' => 'no-cache']);
     } catch (\Exception $e) {
         Log::error("Check-feeds error: {$e->getMessage()}");
-        return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
+        return response()->json(['status' => 'error', 'message' => 'Failed to process feeds'], 500);
     }
 });
 
@@ -77,6 +77,6 @@ $router->get('/test-feed', function () use ($router) {
         return response()->json($result);
     } catch (\Exception $e) {
         Log::error("Test-feed error: {$e->getMessage()}");
-        return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
+        return response()->json(['status' => 'error', 'message' => 'Failed to test feed'], 500);
     }
 });
