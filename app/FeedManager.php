@@ -24,8 +24,8 @@ class FeedManager
         $this->chatId = $chatId;
         $this->imageCacheFile = "feeds/image_cache_{$chatId}.json";
         $this->httpClient = new Client([
-            'timeout' => 90,
-            'connect_timeout' => 15,
+            'timeout' => 120,
+            'connect_timeout' => 20,
             'verify' => false,
             'proxy' => env('HTTP_PROXY', ''),
             'headers' => [
@@ -84,7 +84,7 @@ class FeedManager
             return $publicUrl;
         } catch (\Exception $e) {
             Log::error("Failed to cache image locally for $imageUrl: {$e->getMessage()}");
-            return $imageUrl;
+            return $this->defaultImage; // بازگشت به تصویر پیش‌فرض
         }
     }
 
@@ -221,7 +221,7 @@ class FeedManager
                 if ($source['namespace'] && isset($namespaces[$source['namespace']])) {
                     $value = (string)$item->children($namespaces[$source['namespace']])->{$source['tag']};
                 } else {
-                    $value = isset($item->{$source['tag']}) ? (string)$item->{$source['tag']} : '';
+                    $value = isset($item->{$source['tag']}) ? (string)$item->children($source['tag']) : '';
                 }
                 if ($value !== '') {
                     $cleaned = $this->cleanDescription($value);
@@ -388,7 +388,7 @@ class FeedManager
             return;
         }
 
-        set_time_limit(90);
+        set_time_limit(120);
         $sentLinks = $storageManager->loadSentLinks();
         $hasNews = false;
         $inactiveFeeds = [];
@@ -478,7 +478,8 @@ class FeedManager
                 $namespaces = $xml->getNamespaces(true);
                 $items = $xml->channel->item ?? [];
                 $latestItems = [];
-                foreach ($items as $item) {
+                foreach ($items as $index => $item) {
+                    if ($index >= 10) break; // محدود به 10 آیتم برای عملکرد
                     $link = $this->getFeedData($item, $namespaces, 'link', 'identifier');
                     $pubDate = $this->getFeedData($item, $namespaces, 'pubDate', 'date');
                     if ($this->isRecent($pubDate) && !in_array($link, $sentLinks)) {
@@ -514,10 +515,27 @@ class FeedManager
                     $ogImage = $this->getOgImage($link);
 
                     $linkHtml = $link !== '#' ? "<a href=\"$link\">مشاهده خبر</a>" : 'بدون لینک';
-                    $message = "📰 سایت: $name\n🗞️ عنوان: <b>$title</b>\n\n📝 توضیحات: " . htmlspecialchars($description, ENT_QUOTES, 'UTF-8');
-                    $message .= "\n\n🕒 زمان انتشار: <i>$jalaliDate</i>\n\n🔗 $linkHtml";
+                    $message = "<b>📰 $name</b>\n";
+                    $message .= "<b>$title</b>\n\n";
+                    $message .= "📝 $description\n\n";
+                    $message .= "🕒 $jalaliDate\n\n";
+                    $message .= "🔗 $linkHtml";
 
                     try {
+                        $telegram->sendPhoto([
+                            'chat_id' => $this->chatId,
+                            'photo' => $ogImage,
+                            'caption' => $message,
+                            'parse_mode' => 'HTML',
+                            'disable_web_page_preview' => false,
+                            'reply_markup' => $replyMarkup
+                        ]);
+                        Log::info("Sent news #$index: $title from $name for chat_id: {$this->chatId}", ['link' => $link, 'pubDate' => $pubDate, 'ogImage' => $ogImage]);
+                        $storageManager->saveSentLink($link);
+                        sleep(1);
+                    } catch (\Exception $e) {
+                        Log::error("Failed to send news #$index: $title from $name: {$e->getMessage()}");
+                        // تلاش برای ارسال بدون تصویر
                         $telegram->sendMessage([
                             'chat_id' => $this->chatId,
                             'text' => $message,
@@ -525,11 +543,8 @@ class FeedManager
                             'disable_web_page_preview' => false,
                             'reply_markup' => $replyMarkup
                         ]);
-                        Log::info("Sent news #$index: $title from $name for chat_id: {$this->chatId}", ['link' => $link, 'pubDate' => $pubDate]);
+                        Log::info("Sent news #$index without photo: $title from $name for chat_id: {$this->chatId}", ['link' => $link]);
                         $storageManager->saveSentLink($link);
-                        sleep(1);
-                    } catch (\Exception $e) {
-                        Log::error("Failed to send news #$index: $title from $name: {$e->getMessage()}");
                     }
                 }
             } catch (\Exception $e) {
