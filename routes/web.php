@@ -1,5 +1,8 @@
 <?php
 use App\TelegramHandler;
+use App\FeedProcessor;
+use App\ImageHandler;
+use App\ConfigHandler;
 use Telegram\Bot\Api;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Log;
@@ -14,7 +17,10 @@ $router->post('/telegram/webhook', function () use ($router) {
     $chatId = $update['message']['chat']['id'] ?? null;
 
     if ($chatId) {
-        $handler = new TelegramHandler($telegram, (string)$chatId);
+        $configHandler = new ConfigHandler($chatId);
+        $imageHandler = new ImageHandler($chatId);
+        $feedProcessor = new FeedProcessor($telegram, $chatId, $imageHandler);
+        $handler = new TelegramHandler($telegram, $chatId, $configHandler, $feedProcessor);
         $handler->handleMessage($update['message']);
     }
 
@@ -24,17 +30,18 @@ $router->post('/telegram/webhook', function () use ($router) {
 $router->get('/check-feeds', function () use ($router) {
     $telegram = new Api(env('TELEGRAM_BOT_TOKEN'));
     
-    // خواندن همه فایل‌های JSON از پوشه feeds
     $feedFiles = Storage::files('feeds');
     $processedChats = [];
     
     foreach ($feedFiles as $file) {
-        // فقط فایل‌های با فرمت <chat_id>.json
         if (preg_match('/feeds\/(\d+)\.json/', $file, $matches)) {
             $chatId = $matches[1];
             try {
-                $handler = new TelegramHandler($telegram, $chatId);
-                $config = $handler->getConfig();
+                $configHandler = new ConfigHandler($chatId);
+                $imageHandler = new ImageHandler($chatId);
+                $feedProcessor = new FeedProcessor($telegram, $chatId, $imageHandler);
+                $handler = new TelegramHandler($telegram, $chatId, $configHandler, $feedProcessor);
+                $config = $configHandler->getConfig();
                 if ($config['auto_send'] === true) {
                     $handler->checkAndSendFeeds();
                     $processedChats[] = $chatId;
@@ -64,7 +71,9 @@ $router->get('/test-feed', function () use ($router) {
         return response()->json(['status' => 'error', 'message' => 'Invalid or missing URL'], 400);
     }
 
-    $handler = new TelegramHandler($telegram, $chatId);
-    $result = $handler->testFeed($url);
+    $imageHandler = new ImageHandler($chatId);
+    $feedProcessor = new FeedProcessor($telegram, $chatId, $imageHandler);
+    $result = $feedProcessor->testFeed($url);
     return response()->json($result);
 });
+?>
