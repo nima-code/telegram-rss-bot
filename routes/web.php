@@ -23,10 +23,13 @@ $router->post('/telegram/webhook', function () use ($router) {
 
 $router->get('/check-feeds', function () use ($router) {
     $telegram = new Api(env('TELEGRAM_BOT_TOKEN'));
+    
+    // خواندن همه فایل‌های JSON از پوشه feeds
     $feedFiles = Storage::files('feeds');
     $processedChats = [];
-
+    
     foreach ($feedFiles as $file) {
+        // فقط فایل‌های با فرمت <chat_id>.json
         if (preg_match('/feeds\/(\d+)\.json/', $file, $matches)) {
             $chatId = $matches[1];
             try {
@@ -56,7 +59,7 @@ $router->get('/test-feed', function () use ($router) {
     $telegram = new Api(env('TELEGRAM_BOT_TOKEN'));
     $url = $router->app->request->query('url');
     $chatId = $router->app->request->query('chat_id', '1428476584');
-
+    
     if (!$url || !filter_var($url, FILTER_VALIDATE_URL)) {
         return response()->json(['status' => 'error', 'message' => 'Invalid or missing URL'], 400);
     }
