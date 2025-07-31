@@ -9,7 +9,7 @@ class ImageHandler
 {
     protected $chatId;
     protected $httpClient;
-    protected $defaultImage = 'https://www.khabaronline.ir/assets/khabaronline-logo.png';
+    protected $defaultImage = '/images/default.jpg'; // تصویر پیش‌فرض محلی
     protected $imageCacheFile;
     protected $localImagePath = 'public/images/';
 
@@ -89,17 +89,18 @@ class ImageHandler
             return $this->cacheImageLocally($cache[$url]['image']);
         }
 
-        for ($attempt = 1; $attempt <= 5; $attempt++) {
+        for ($attempt = 1; $attempt <= 6; $attempt++) {
             try {
                 $response = $this->httpClient->get($url);
                 $html = $response->getBody()->getContents();
                 $metaTags = [
-                    '/<meta\s+property="og:image"\s+content="([^"]+\.(jpg|jpeg|png))"/i',
-                    '/<meta\s+property="og:image:secure_url"\s+content="([^"]+\.(jpg|jpeg|png))"/i',
-                    '/<meta\s+name="twitter:image"\s+content="([^"]+\.(jpg|jpeg|png))"/i',
+                    '/<meta\s+property="og:image"\s+content="([^"]+\.(jpg|jpeg|png|webp))"/i',
+                    '/<meta\s+property="og:image:secure_url"\s+content="([^"]+\.(jpg|jpeg|png|webp))"/i',
+                    '/<meta\s+name="twitter:image"\s+content="([^"]+\.(jpg|jpeg|png|webp))"/i',
                     '/<meta\s+property="og:image"\s+content="([^"]+)"/i',
                     '/<meta\s+name="image"\s+content="([^"]+)"/i',
-                    '/<img\s+src="([^"]+\.(jpg|jpeg|png))"[^>]*>/i'
+                    '/<img\s+src="([^"]+\.(jpg|jpeg|png|webp))"[^>]*width=["\']?\d{2,4}["\']?[^>]*height=["\']?\d{2,4}["\']?[^>]*>/i',
+                    '/<img\s+src="([^"]+\.(jpg|jpeg|png|webp))"[^>]*>/i'
                 ];
                 $foundImages = [];
                 foreach ($metaTags as $pattern) {
@@ -107,35 +108,44 @@ class ImageHandler
                         $foundImages = array_merge($foundImages, $matches[1]);
                     }
                 }
-                $image = !empty($foundImages) ? $foundImages[0] : $this->defaultImage;
-                $cachedImage = $this->cacheImageLocally($image);
-                $cache[$url] = ['image' => $image, 'timestamp' => time()];
-                $this->saveImageCache($cache);
-                Log::info("Found og:image for $url", [
-                    'image' => $image, 
-                    'foundImages' => $foundImages, 
-                    'cachedImage' => $cachedImage,
-                    'response_time' => $response->getHeader('X-Response-Time') ?? 'unknown'
-                ]);
-                return $cachedImage;
+                $image = !empty($foundImages) ? $foundImages[0] : null;
+                if ($image && filter_var($image, FILTER_VALIDATE_URL)) {
+                    $cachedImage = $this->cacheImageLocally($image);
+                    $cache[$url] = ['image' => $image, 'timestamp' => time()];
+                    $this->saveImageCache($cache);
+                    Log::info("Found og:image for $url", [
+                        'image' => $image, 
+                        'foundImages' => $foundImages, 
+                        'cachedImage' => $cachedImage,
+                        'response_time' => $response->getHeader('X-Response-Time') ?? 'unknown'
+                    ]);
+                    return $cachedImage;
+                } else {
+                    Log::warning("No valid image found for $url, falling back to default", ['foundImages' => $foundImages]);
+                    $cache[$url] = ['image' => $this->defaultImage, 'timestamp' => time()];
+                    $this->saveImageCache($cache);
+                    return env('APP_URL') . $this->defaultImage;
+                }
             } catch (\Exception $e) {
+                $delay = pow(2, $attempt - 1) * 2; // Exponential backoff: 2s, 4s, 8s, 16s, 32s, 64s
                 Log::warning("Retry $attempt for og:image $url: {$e->getMessage()}", [
                     'error_code' => $e->getCode(),
                     'error_details' => $e instanceof RequestException && $e->hasResponse() 
                         ? $e->getResponse()->getStatusCode() . ' ' . $e->getResponse()->getReasonPhrase() 
-                        : 'No response'
+                        : 'No response',
+                    'delay' => $delay
                 ]);
-                if ($attempt < 5) {
-                    sleep($attempt * 2);
+                if ($attempt < 6) {
+                    sleep($delay);
                     continue;
                 }
-                Log::error("Failed to fetch og:image for $url after 5 attempts: {$e->getMessage()}");
+                Log::error("Failed to fetch og:image for $url after 6 attempts: {$e->getMessage()}");
                 $cache[$url] = ['image' => $this->defaultImage, 'timestamp' => time()];
                 $this->saveImageCache($cache);
-                return $this->cacheImageLocally($this->defaultImage);
+                return env('APP_URL') . $this->defaultImage;
             }
         }
-        return $this->cacheImageLocally($this->defaultImage);
+        return env('APP_URL') . $this->defaultImage;
     }
 }
 ?>
