@@ -15,7 +15,7 @@ class FeedManager
 {
     protected $chatId;
     protected $httpClient;
-    protected $defaultImage = 'https://www.khabaronline.ir/assets/khabaronline-logo.png'; // جایگزین با تصویر پیش‌فرض مناسب برای Open Graph
+    protected $defaultImage = 'https://www.khabaronline.ir/assets/khabaronline-logo.png'; // جایگزین با تصویر مناسب برای Open Graph
     protected $localImagePath = 'public/images/';
     protected $imageCacheFile;
 
@@ -24,7 +24,7 @@ class FeedManager
         $this->chatId = $chatId;
         $this->imageCacheFile = "feeds/image_cache_{$chatId}.json";
         $this->httpClient = new Client([
-            'timeout' => 150, // افزایش timeout
+            'timeout' => 120, // بازگشت به مقدار اصلی
             'connect_timeout' => 20,
             'verify' => false,
             'proxy' => env('HTTP_PROXY', ''),
@@ -54,24 +54,38 @@ class FeedManager
     protected function loadImageCache()
     {
         if (Storage::exists($this->imageCacheFile)) {
-            return json_decode(Storage::get($this->imageCacheFile), true) ?? [];
+            $cache = json_decode(Storage::get($this->imageCacheFile), true);
+            if ($cache === null) {
+                Log::error("Invalid JSON in image cache file for chat_id: {$this->chatId}", ['file' => $this->imageCacheFile]);
+                return [];
+            }
+            return $cache;
         }
         return [];
     }
 
     protected function saveImageCache($cache)
     {
-        Storage::put($this->imageCacheFile, json_encode($cache, JSON_UNESCAPED_UNICODE));
-        Log::info("Saved image cache for chat_id: {$this->chatId}", ['cache_size' => count($cache)]);
+        try {
+            Storage::put($this->imageCacheFile, json_encode($cache, JSON_UNESCAPED_UNICODE));
+            Log::info("Saved image cache for chat_id: {$this->chatId}", ['cache_size' => count($cache)]);
+        } catch (\Exception $e) {
+            Log::error("Failed to save image cache for chat_id: {$this->chatId}: {$e->getMessage()}");
+        }
     }
 
     protected function cacheImageLocally($imageUrl)
     {
+        if (!filter_var($imageUrl, FILTER_VALIDATE_URL)) {
+            Log::warning("Invalid image URL: $imageUrl", ['chat_id' => $this->chatId]);
+            return $this->defaultImage;
+        }
+
         $filename = md5($imageUrl) . '.' . pathinfo($imageUrl, PATHINFO_EXTENSION);
         $localPath = $this->localImagePath . $filename;
         $publicUrl = env('APP_URL') . '/images/' . $filename;
 
-        if (Storage::exists($localPath) && (time() - Storage::lastModified($localPath)) < 172800) { // افزایش به 48 ساعت
+        if (Storage::exists($localPath) && (time() - Storage::lastModified($localPath)) < 86400) {
             Log::info("Using cached local image for $imageUrl", ['localPath' => $localPath, 'publicUrl' => $publicUrl]);
             return $publicUrl;
         }
@@ -83,22 +97,27 @@ class FeedManager
             Log::info("Cached image locally for $imageUrl", ['localPath' => $localPath, 'publicUrl' => $publicUrl]);
             return $publicUrl;
         } catch (\Exception $e) {
-            Log::error("Failed to cache image locally for $imageUrl: {$e->getMessage()}");
+            Log::error("Failed to cache image locally for $imageUrl: {$e->getMessage()}", ['chat_id' => $this->chatId]);
             return $this->defaultImage;
         }
     }
 
     protected function getOgImage($url)
     {
+        if (!filter_var($url, FILTER_VALIDATE_URL)) {
+            Log::warning("Invalid URL for og:image: $url", ['chat_id' => $this->chatId]);
+            return $this->cacheImageLocally($this->defaultImage);
+        }
+
         $cache = $this->loadImageCache();
-        if (isset($cache[$url]) && (time() - $cache[$url]['timestamp']) < 7200) { // افزایش به 2 ساعت
+        if (isset($cache[$url]) && (time() - $cache[$url]['timestamp']) < 3600) {
             Log::info("Using cached og:image for $url", ['image' => $cache[$url]['image']]);
             return $this->cacheImageLocally($cache[$url]['image']);
         }
 
-        for ($attempt = 1; $attempt <= 5; $attempt++) {
+        for ($attempt = 1; $attempt <= 3; $attempt++) {
             try {
-                Log::debug("Attempting to fetch og:image for $url", ['attempt' => $attempt]);
+                Log::debug("Attempting to fetch og:image for $url", ['attempt' => $attempt, 'chat_id' => $this->chatId]);
                 $response = $this->httpClient->get($url);
                 $html = $response->getBody()->getContents();
                 $metaTags = [
@@ -118,7 +137,6 @@ class FeedManager
                 }
                 $image = !empty($foundImages) ? $foundImages[0] : $this->defaultImage;
                 if ($image !== $this->defaultImage && !filter_var($image, FILTER_VALIDATE_URL)) {
-                    // تبدیل URL نسبی به مطلق
                     $image = rtrim($url, '/') . '/' . ltrim($image, '/');
                 }
                 $cachedImage = $this->cacheImageLocally($image);
@@ -127,12 +145,12 @@ class FeedManager
                 Log::info("Found og:image for $url", ['image' => $image, 'cachedImage' => $cachedImage]);
                 return $cachedImage;
             } catch (\Exception $e) {
-                Log::warning("Retry $attempt for og:image $url: {$e->getMessage()}");
-                if ($attempt < 5) {
-                    sleep($attempt * 1);
+                Log::warning("Retry $attempt for og:image $url: {$e->getMessage()}", ['chat_id' => $this->chatId]);
+                if ($attempt < 3) {
+                    sleep($attempt * 2);
                     continue;
                 }
-                Log::error("Failed to fetch og:image for $url: {$e->getMessage()}");
+                Log::error("Failed to fetch og:image for $url: {$e->getMessage()}", ['chat_id' => $this->chatId]);
                 $cache[$url] = ['image' => $this->defaultImage, 'timestamp' => time()];
                 $this->saveImageCache($cache);
                 return $this->cacheImageLocally($this->defaultImage);
@@ -161,10 +179,10 @@ class FeedManager
                 }
             }
             $text = $this->cleanDescription($text);
-            Log::info("Extracted description from page $url", ['description' => $text]);
+            Log::info("Extracted description from page $url", ['description' => $text, 'chat_id' => $this->chatId]);
             return $text !== '' ? $text : 'بدون توضیحات';
         } catch (\Exception $e) {
-            Log::error("Failed to extract description from page $url: {$e->getMessage()}");
+            Log::error("Failed to extract description from page $url: {$e->getMessage()}", ['chat_id' => $this->chatId]);
             return 'بدون توضیحات';
         }
     }
@@ -212,7 +230,7 @@ class FeedManager
     protected function getFeedData($item, $namespaces, $tag, $fallbackTag = null)
     {
         if (!($item instanceof \SimpleXMLElement)) {
-            Log::error("Invalid item type in getFeedData, expected SimpleXMLElement, got " . gettype($item));
+            Log::error("Invalid item type in getFeedData, expected SimpleXMLElement, got " . gettype($item), ['chat_id' => $this->chatId]);
             return $tag === 'link' ? '#' : 'بدون ' . $tag;
         }
 
@@ -231,7 +249,7 @@ class FeedManager
                 }
                 if ($value !== '') {
                     $cleaned = $this->cleanDescription($value);
-                    Log::debug("Using {$source['tag']} for description", ['raw' => substr($value, 0, 500)]);
+                    Log::debug("Using {$source['tag']} for description", ['raw' => substr($value, 0, 500), 'chat_id' => $this->chatId]);
                     if ($cleaned !== 'بدون توضیحات') {
                         return $cleaned;
                     }
@@ -287,13 +305,13 @@ class FeedManager
             $pubDateTime = new DateTime($pubDate, new DateTimeZone('GMT'));
             $now = new DateTime('now', new DateTimeZone('GMT'));
             $interval = $now->getTimestamp() - $pubDateTime->getTimestamp();
-            $isRecent = $interval <= 10 * 60;
+            $isRecent = $interval <= 15 * 60; // افزایش به 15 دقیقه برای تست
             if (!$isRecent) {
-                Log::debug("Item filtered out due to old pubDate", ['pubDate' => $pubDate, 'interval' => $interval]);
+                Log::debug("Item filtered out due to old pubDate", ['pubDate' => $pubDate, 'interval' => $interval, 'chat_id' => $this->chatId]);
             }
             return $isRecent;
         } catch (\Exception $e) {
-            Log::error("Invalid pubDate format: $pubDate", ['error' => $e->getMessage()]);
+            Log::error("Invalid pubDate format: $pubDate", ['error' => $e->getMessage(), 'chat_id' => $this->chatId]);
             return false;
         }
     }
@@ -306,7 +324,7 @@ class FeedManager
             $jalali = Jalalian::fromDateTime($dateTime);
             return $jalali->format('l j F Y، H:i');
         } catch (\Exception $e) {
-            Log::error("Failed to convert pubDate to Jalali: $pubDate", ['error' => $e->getMessage()]);
+            Log::error("Failed to convert pubDate to Jalali: $pubDate", ['error' => $e->getMessage(), 'chat_id' => $this->chatId]);
             return $pubDate;
         }
     }
@@ -316,14 +334,14 @@ class FeedManager
         try {
             Log::info("Testing feed: $url for chat_id: {$this->chatId}");
             $response = null;
-            for ($attempt = 1; $attempt <= 5; $attempt++) {
+            for ($attempt = 1; $attempt <= 3; $attempt++) {
                 try {
                     $response = $this->httpClient->get($url);
                     break;
                 } catch (RequestException $e) {
-                    if ($attempt < 5) {
-                        Log::warning("Retry $attempt for feed $url: {$e->getMessage()}");
-                        sleep($attempt * 3);
+                    if ($attempt < 3) {
+                        Log::warning("Retry $attempt for feed $url: {$e->getMessage()}", ['chat_id' => $this->chatId]);
+                        sleep($attempt * 2);
                         continue;
                     }
                     throw $e;
@@ -357,7 +375,7 @@ class FeedManager
                     'description' => $description,
                     'rawDescription' => (string)$item->description,
                     'rawContent' => isset($namespaces['content']) ? (string)$item->children($namespaces['content'])->encoded : '',
-                    'ogImage' => $this->getOgImage($link) // اضافه کردن برای دیباگ
+                    'ogImage' => $this->getOgImage($link)
                 ];
             }
             Log::info("Found $itemCount items in feed: $url for chat_id: {$this->chatId}", ['items' => $itemArray]);
@@ -395,7 +413,7 @@ class FeedManager
             return;
         }
 
-        set_time_limit(150); // افزایش time limit
+        set_time_limit(120);
         $sentLinks = $storageManager->loadSentLinks();
         $hasNews = false;
         $inactiveFeeds = [];
@@ -411,7 +429,7 @@ class FeedManager
         $pool = new Pool($this->httpClient, array_map(function ($req) {
             return new Request('GET', $req['url']);
         }, $requests), [
-            'concurrency' => 8, // افزایش concurrency
+            'concurrency' => 4, // بازگشت به مقدار اصلی
             'fulfilled' => function ($response, $index) use (&$results, $requests) {
                 $results[$index] = [
                     'status' => 'success',
@@ -503,13 +521,14 @@ class FeedManager
                     }, $latestItems),
                     'pubDates' => array_map(function($item) use ($namespaces) {
                         return (string)$this->getFeedData($item, $namespaces, 'pubDate', 'date');
-                    }, $latestItems)
+                    }, $latestItems),
+                    'chat_id' => $this->chatId
                 ]);
 
                 if (!empty($latestItems)) {
                     $hasNews = true;
                 } else {
-                    Log::info("No recent items found for $name ($url) within 10 minutes");
+                    Log::info("No recent items found for $name ($url) within 15 minutes", ['chat_id' => $this->chatId]);
                     $inactiveFeeds[] = $name;
                 }
 
@@ -539,9 +558,9 @@ class FeedManager
                         ]);
                         Log::info("Sent news #$index: $title from $name for chat_id: {$this->chatId}", ['link' => $link, 'pubDate' => $pubDate, 'ogImage' => $ogImage]);
                         $storageManager->saveSentLink($link);
-                        sleep(0.5); // کاهش تاخیر
+                        sleep(1);
                     } catch (\Exception $e) {
-                        Log::error("Failed to send news #$index: $title from $name: {$e->getMessage()}");
+                        Log::error("Failed to send news #$index: $title from $name: {$e->getMessage()}", ['chat_id' => $this->chatId]);
                         $telegram->sendMessage([
                             'chat_id' => $this->chatId,
                             'text' => $message,
@@ -560,7 +579,7 @@ class FeedManager
         }
 
         if (!$hasNews) {
-            $text = 'هیچ خبر جدیدی در 10 دقیقه اخیر یافت نشد. لطفاً بعداً دوباره تلاش کنید یا فیدها را بررسی کنید.';
+            $text = 'هیچ خبر جدیدی در 15 دقیقه اخیر یافت نشد. لطفاً بعداً دوباره تلاش کنید یا فیدها را بررسی کنید.';
             if (!empty($inactiveFeeds)) {
                 $text .= "\nفیدهای بدون خبر جدید: " . implode(', ', $inactiveFeeds);
             }
@@ -569,7 +588,7 @@ class FeedManager
                 'text' => $text,
                 'reply_markup' => $replyMarkup
             ]);
-            Log::info("No recent news found within 10 minutes for any feed for chat_id: {$this->chatId}", ['inactiveFeeds' => $inactiveFeeds]);
+            Log::info("No recent news found within 15 minutes for any feed for chat_id: {$this->chatId}", ['inactiveFeeds' => $inactiveFeeds]);
         }
 
         Log::info("Finished sendLatestNews for chat_id: {$this->chatId}", ['duration' => microtime(true) - $startTime, 'hasNews' => $hasNews]);
