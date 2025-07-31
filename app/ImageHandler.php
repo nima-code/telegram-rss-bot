@@ -9,7 +9,11 @@ class ImageHandler
 {
     protected $chatId;
     protected $httpClient;
-    protected $defaultImage = '/images/default.jpg'; // تصویر پیش‌فرض محلی
+    protected $defaultImage = '/images/default.jpg'; // تصویر پیش‌فرض عمومی
+    protected $fallbackImages = [
+        'khabaronline.ir' => '/images/khabaronline.jpg', // تصویر پیش‌فرض برای خبرانلاین
+        'default' => '/images/default.jpg'
+    ];
     protected $imageCacheFile;
     protected $localImagePath = 'public/images/';
 
@@ -24,7 +28,7 @@ class ImageHandler
             'proxy' => env('HTTP_PROXY', ''),
             'headers' => [
                 'User-Agent' => 'TelegramBot/1.0 (+https://core.telegram.org/bots)',
-                'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/jpeg,image/png,*/*;q=0.8',
                 'Accept-Language' => 'en-US,en;q=0.5',
                 'X-Telegram-Bot' => 'LumenRSSBot/1.0'
             ]
@@ -60,7 +64,7 @@ class ImageHandler
 
     public function cacheImageLocally($imageUrl)
     {
-        $filename = md5($imageUrl) . '.' . pathinfo($imageUrl, PATHINFO_EXTENSION);
+        $filename = md5($imageUrl) . '.' . pathinfo(parse_url($imageUrl, PHP_URL_PATH), PATHINFO_EXTENSION);
         $localPath = $this->localImagePath . $filename;
         $publicUrl = env('APP_URL') . '/images/' . $filename;
 
@@ -81,7 +85,7 @@ class ImageHandler
         }
     }
 
-    public function getOgImage($url)
+    public function getOgImage($url, $rssItem = null, $namespaces = [])
     {
         $cache = $this->loadImageCache();
         if (isset($cache[$url]) && (time() - $cache[$url]['timestamp']) < 3600) {
@@ -89,18 +93,43 @@ class ImageHandler
             return $this->cacheImageLocally($cache[$url]['image']);
         }
 
-        for ($attempt = 1; $attempt <= 6; $attempt++) {
+        // Step 1: Try extracting image from RSS feed
+        $rssImage = null;
+        if ($rssItem && !empty($namespaces)) {
+            try {
+                if (isset($namespaces['media']) && $rssItem->children($namespaces['media'])->content) {
+                    $mediaContent = $rssItem->children($namespaces['media'])->content;
+                    if (isset($mediaContent->attributes()->url)) {
+                        $rssImage = (string)$mediaContent->attributes()->url;
+                    }
+                } elseif (isset($namespaces['media']) && $rssItem->children($namespaces['media'])->thumbnail) {
+                    $rssImage = (string)$rssItem->children($namespaces['media'])->thumbnail->attributes()->url;
+                }
+                if ($rssImage && filter_var($rssImage, FILTER_VALIDATE_URL)) {
+                    $cachedImage = $this->cacheImageLocally($rssImage);
+                    $cache[$url] = ['image' => $rssImage, 'timestamp' => time()];
+                    $this->saveImageCache($cache);
+                    Log::info("Found RSS image for $url", ['image' => $rssImage, 'cachedImage' => $cachedImage]);
+                    return $cachedImage;
+                }
+            } catch (\Exception $e) {
+                Log::warning("Failed to extract RSS image for $url: {$e->getMessage()}");
+            }
+        }
+
+        // Step 2: Try extracting image from webpage
+        for ($attempt = 1; $attempt <= 7; $attempt++) {
             try {
                 $response = $this->httpClient->get($url);
                 $html = $response->getBody()->getContents();
                 $metaTags = [
-                    '/<meta\s+property="og:image"\s+content="([^"]+\.(jpg|jpeg|png|webp))"/i',
-                    '/<meta\s+property="og:image:secure_url"\s+content="([^"]+\.(jpg|jpeg|png|webp))"/i',
-                    '/<meta\s+name="twitter:image"\s+content="([^"]+\.(jpg|jpeg|png|webp))"/i',
+                    '/<meta\s+property="og:image"\s+content="([^"]+\.(jpg|jpeg|png|webp|gif))"/i',
+                    '/<meta\s+property="og:image:secure_url"\s+content="([^"]+\.(jpg|jpeg|png|webp|gif))"/i',
+                    '/<meta\s+name="twitter:image"\s+content="([^"]+\.(jpg|jpeg|png|webp|gif))"/i',
                     '/<meta\s+property="og:image"\s+content="([^"]+)"/i',
                     '/<meta\s+name="image"\s+content="([^"]+)"/i',
-                    '/<img\s+src="([^"]+\.(jpg|jpeg|png|webp))"[^>]*width=["\']?\d{2,4}["\']?[^>]*height=["\']?\d{2,4}["\']?[^>]*>/i',
-                    '/<img\s+src="([^"]+\.(jpg|jpeg|png|webp))"[^>]*>/i'
+                    '/<img\s+src="([^"]+\.(jpg|jpeg|png|webp|gif))"[^>]*width=["\']?\d{2,4}["\']?[^>]*height=["\']?\d{2,4}["\']?[^>]*>/i',
+                    '/<img\s+src="([^"]+\.(jpg|jpeg|png|webp|gif))"[^>]*>/i'
                 ];
                 $foundImages = [];
                 foreach ($metaTags as $pattern) {
@@ -114,38 +143,65 @@ class ImageHandler
                     $cache[$url] = ['image' => $image, 'timestamp' => time()];
                     $this->saveImageCache($cache);
                     Log::info("Found og:image for $url", [
-                        'image' => $image, 
-                        'foundImages' => $foundImages, 
+                        'image' => $image,
+                        'foundImages' => $foundImages,
                         'cachedImage' => $cachedImage,
-                        'response_time' => $response->getHeader('X-Response-Time') ?? 'unknown'
+                        'response_time' => $response->getHeader('X-Response-Time') ?? 'unknown',
+                        'headers' => $response->getHeaders()
                     ]);
                     return $cachedImage;
                 } else {
-                    Log::warning("No valid image found for $url, falling back to default", ['foundImages' => $foundImages]);
-                    $cache[$url] = ['image' => $this->defaultImage, 'timestamp' => time()];
-                    $this->saveImageCache($cache);
-                    return env('APP_URL') . $this->defaultImage;
+                    Log::warning("No valid image found in webpage for $url", ['foundImages' => $foundImages]);
                 }
             } catch (\Exception $e) {
-                $delay = pow(2, $attempt - 1) * 2; // Exponential backoff: 2s, 4s, 8s, 16s, 32s, 64s
+                $delay = pow(2, $attempt - 1) * 2; // Exponential backoff: 2s, 4s, 8s, 16s, 32s, 64s, 128s
                 Log::warning("Retry $attempt for og:image $url: {$e->getMessage()}", [
                     'error_code' => $e->getCode(),
                     'error_details' => $e instanceof RequestException && $e->hasResponse() 
                         ? $e->getResponse()->getStatusCode() . ' ' . $e->getResponse()->getReasonPhrase() 
                         : 'No response',
-                    'delay' => $delay
+                    'delay' => $delay,
+                    'html_snippet' => isset($html) ? substr($html, 0, 500) : 'No HTML'
                 ]);
-                if ($attempt < 6) {
+                if ($attempt < 7) {
                     sleep($delay);
                     continue;
                 }
-                Log::error("Failed to fetch og:image for $url after 6 attempts: {$e->getMessage()}");
-                $cache[$url] = ['image' => $this->defaultImage, 'timestamp' => time()];
-                $this->saveImageCache($cache);
-                return env('APP_URL') . $this->defaultImage;
+                Log::error("Failed to fetch og:image for $url after 7 attempts: {$e->getMessage()}");
             }
         }
-        return env('APP_URL') . $this->defaultImage;
+
+        // Step 3: Fallback to site-specific or default image
+        $host = parse_url($url, PHP_URL_HOST);
+        $fallbackImage = isset($this->fallbackImages[$host]) ? $this->fallbackImages[$host] : $this->fallbackImages['default'];
+        $cache[$url] = ['image' => $fallbackImage, 'timestamp' => time()];
+        $this->saveImageCache($cache);
+        Log::info("Using fallback image for $url", ['fallbackImage' => $fallbackImage]);
+        return env('APP_URL') . $fallbackImage;
+    }
+
+    public function getOgMetaTags($url)
+    {
+        try {
+            $response = $this->httpClient->get($url);
+            $html = $response->getBody()->getContents();
+            $metaTags = [
+                'og:title' => '/<meta\s+property="og:title"\s+content="([^"]+)"/i',
+                'og:description' => '/<meta\s+property="og:description"\s+content="([^"]+)"/i',
+                'og:image' => '/<meta\s+property="og:image"\s+content="([^"]+)"/i'
+            ];
+            $results = [];
+            foreach ($metaTags as $key => $pattern) {
+                if (preg_match($pattern, $html, $matches)) {
+                    $results[$key] = $matches[1];
+                }
+            }
+            Log::info("Extracted og:meta tags for $url", ['metaTags' => $results]);
+            return $results;
+        } catch (\Exception $e) {
+            Log::error("Failed to extract og:meta tags for $url: {$e->getMessage()}");
+            return [];
+        }
     }
 }
 ?>
