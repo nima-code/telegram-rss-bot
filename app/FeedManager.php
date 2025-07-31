@@ -15,6 +15,7 @@ class FeedManager
 {
     protected $chatId;
     protected $httpClient;
+    protected $defaultImage = 'https://www.khabaronline.ir/assets/khabaronline-logo.png'; // جایگزین با تصویر پیش‌فرض مناسب برای Open Graph
     protected $localImagePath = 'public/images/';
     protected $imageCacheFile;
 
@@ -23,7 +24,7 @@ class FeedManager
         $this->chatId = $chatId;
         $this->imageCacheFile = "feeds/image_cache_{$chatId}.json";
         $this->httpClient = new Client([
-            'timeout' => 120,
+            'timeout' => 150, // افزایش timeout
             'connect_timeout' => 20,
             'verify' => false,
             'proxy' => env('HTTP_PROXY', ''),
@@ -70,7 +71,7 @@ class FeedManager
         $localPath = $this->localImagePath . $filename;
         $publicUrl = env('APP_URL') . '/images/' . $filename;
 
-        if (Storage::exists($localPath) && (time() - Storage::lastModified($localPath)) < 86400) {
+        if (Storage::exists($localPath) && (time() - Storage::lastModified($localPath)) < 172800) { // افزایش به 48 ساعت
             Log::info("Using cached local image for $imageUrl", ['localPath' => $localPath, 'publicUrl' => $publicUrl]);
             return $publicUrl;
         }
@@ -83,26 +84,28 @@ class FeedManager
             return $publicUrl;
         } catch (\Exception $e) {
             Log::error("Failed to cache image locally for $imageUrl: {$e->getMessage()}");
-            return null;
+            return $this->defaultImage;
         }
     }
 
     protected function getOgImage($url)
     {
         $cache = $this->loadImageCache();
-        if (isset($cache[$url]) && (time() - $cache[$url]['timestamp']) < 3600) {
+        if (isset($cache[$url]) && (time() - $cache[$url]['timestamp']) < 7200) { // افزایش به 2 ساعت
             Log::info("Using cached og:image for $url", ['image' => $cache[$url]['image']]);
             return $this->cacheImageLocally($cache[$url]['image']);
         }
 
-        for ($attempt = 1; $attempt <= 3; $attempt++) {
+        for ($attempt = 1; $attempt <= 5; $attempt++) {
             try {
+                Log::debug("Attempting to fetch og:image for $url", ['attempt' => $attempt]);
                 $response = $this->httpClient->get($url);
                 $html = $response->getBody()->getContents();
                 $metaTags = [
                     '/<meta\s+property="og:image"\s+content="([^"]+\.(jpg|jpeg|png))"/i',
                     '/<meta\s+property="og:image:secure_url"\s+content="([^"]+\.(jpg|jpeg|png))"/i',
                     '/<meta\s+name="twitter:image"\s+content="([^"]+\.(jpg|jpeg|png))"/i',
+                    '/<meta\s+name="image_src"\s+content="([^"]+\.(jpg|jpeg|png))"/i',
                     '/<meta\s+property="og:image"\s+content="([^"]+)"/i',
                     '/<meta\s+name="image"\s+content="([^"]+)"/i',
                     '/<img\s+src="([^"]+\.(jpg|jpeg|png))"[^>]*>/i'
@@ -113,31 +116,29 @@ class FeedManager
                         $foundImages = array_merge($foundImages, $matches[1]);
                     }
                 }
-                if (empty($foundImages)) {
-                    Log::warning("No valid og:image found for $url");
-                    return null;
+                $image = !empty($foundImages) ? $foundImages[0] : $this->defaultImage;
+                if ($image !== $this->defaultImage && !filter_var($image, FILTER_VALIDATE_URL)) {
+                    // تبدیل URL نسبی به مطلق
+                    $image = rtrim($url, '/') . '/' . ltrim($image, '/');
                 }
-                $image = $foundImages[0];
                 $cachedImage = $this->cacheImageLocally($image);
-                if ($cachedImage) {
-                    $cache[$url] = ['image' => $image, 'timestamp' => time()];
-                    $this->saveImageCache($cache);
-                    Log::info("Found og:image for $url", ['image' => $image, 'cachedImage' => $cachedImage]);
-                    return $cachedImage;
-                }
-                Log::warning("Failed to cache og:image for $url", ['image' => $image]);
-                return null;
+                $cache[$url] = ['image' => $image, 'timestamp' => time()];
+                $this->saveImageCache($cache);
+                Log::info("Found og:image for $url", ['image' => $image, 'cachedImage' => $cachedImage]);
+                return $cachedImage;
             } catch (\Exception $e) {
                 Log::warning("Retry $attempt for og:image $url: {$e->getMessage()}");
-                if ($attempt < 3) {
-                    sleep($attempt * 2);
+                if ($attempt < 5) {
+                    sleep($attempt * 1);
                     continue;
                 }
                 Log::error("Failed to fetch og:image for $url: {$e->getMessage()}");
-                return null;
+                $cache[$url] = ['image' => $this->defaultImage, 'timestamp' => time()];
+                $this->saveImageCache($cache);
+                return $this->cacheImageLocally($this->defaultImage);
             }
         }
-        return null;
+        return $this->cacheImageLocally($this->defaultImage);
     }
 
     protected function extractDescriptionFromPage($url)
@@ -226,7 +227,7 @@ class FeedManager
                 if ($source['namespace'] && isset($namespaces[$source['namespace']])) {
                     $value = (string)$item->children($namespaces[$source['namespace']])->{$source['tag']};
                 } else {
-                    $value = isset($item->{$source['tag']}) ? (string)$item->{$source['tag']} : '';
+                    $value = isset($item->{$source['tag']}) ? (string)$item->children($source['tag']) : '';
                 }
                 if ($value !== '') {
                     $cleaned = $this->cleanDescription($value);
@@ -315,14 +316,14 @@ class FeedManager
         try {
             Log::info("Testing feed: $url for chat_id: {$this->chatId}");
             $response = null;
-            for ($attempt = 1; $attempt <= 3; $attempt++) {
+            for ($attempt = 1; $attempt <= 5; $attempt++) {
                 try {
                     $response = $this->httpClient->get($url);
                     break;
                 } catch (RequestException $e) {
-                    if ($attempt < 3) {
+                    if ($attempt < 5) {
                         Log::warning("Retry $attempt for feed $url: {$e->getMessage()}");
-                        sleep($attempt * 2);
+                        sleep($attempt * 3);
                         continue;
                     }
                     throw $e;
@@ -348,16 +349,15 @@ class FeedManager
                 $pubDate = $this->getFeedData($item, $namespaces, 'pubDate', 'date');
                 $link = $this->getFeedData($item, $namespaces, 'link', 'identifier');
                 $description = $this->getFeedData($item, $namespaces, 'description');
-                $ogImage = $this->getOgImage($link);
                 $itemArray[] = [
                     'title' => $this->getFeedData($item, $namespaces, 'title', 'title'),
                     'link' => $link,
                     'pubDate' => $pubDate,
                     'isRecent' => $this->isRecent($pubDate),
                     'description' => $description,
-                    'ogImage' => $ogImage,
                     'rawDescription' => (string)$item->description,
-                    'rawContent' => isset($namespaces['content']) ? (string)$item->children($namespaces['content'])->encoded : ''
+                    'rawContent' => isset($namespaces['content']) ? (string)$item->children($namespaces['content'])->encoded : '',
+                    'ogImage' => $this->getOgImage($link) // اضافه کردن برای دیباگ
                 ];
             }
             Log::info("Found $itemCount items in feed: $url for chat_id: {$this->chatId}", ['items' => $itemArray]);
@@ -395,7 +395,7 @@ class FeedManager
             return;
         }
 
-        set_time_limit(120);
+        set_time_limit(150); // افزایش time limit
         $sentLinks = $storageManager->loadSentLinks();
         $hasNews = false;
         $inactiveFeeds = [];
@@ -411,7 +411,7 @@ class FeedManager
         $pool = new Pool($this->httpClient, array_map(function ($req) {
             return new Request('GET', $req['url']);
         }, $requests), [
-            'concurrency' => 4,
+            'concurrency' => 8, // افزایش concurrency
             'fulfilled' => function ($response, $index) use (&$results, $requests) {
                 $results[$index] = [
                     'status' => 'success',
@@ -486,17 +486,18 @@ class FeedManager
                 $items = $xml->channel->item ?? [];
                 $latestItems = [];
                 foreach ($items as $index => $item) {
-                    if ($index >= 10) break; // محدود به 10 آیتم برای عملکرد
+                    if ($index >= 10) break;
                     $link = $this->getFeedData($item, $namespaces, 'link', 'identifier');
                     $pubDate = $this->getFeedData($item, $namespaces, 'pubDate', 'date');
-                    $ogImage = $this->getOgImage($link);
-                    if ($this->isRecent($pubDate) && !in_array($link, $sentLinks) && $ogImage !== null) {
+                    if ($this->isRecent($pubDate) && !in_array($link, $sentLinks)) {
                         $latestItems[] = $item;
                     }
-                    if (count($latestItems) >= 5) break;
+                    if (count($latestItems) >= 5) {
+                        break;
+                    }
                 }
 
-                Log::info("Processing $name: Selected " . count($latestItems) . " items with valid og:image for sending", [
+                Log::info("Processing $name: Selected " . count($latestItems) . " items for sending", [
                     'titles' => array_map(function($item) use ($namespaces) {
                         return (string)$this->getFeedData($item, $namespaces, 'title', 'title');
                     }, $latestItems),
@@ -508,7 +509,7 @@ class FeedManager
                 if (!empty($latestItems)) {
                     $hasNews = true;
                 } else {
-                    Log::info("No recent items with valid og:image found for $name ($url) within 10 minutes");
+                    Log::info("No recent items found for $name ($url) within 10 minutes");
                     $inactiveFeeds[] = $name;
                 }
 
@@ -521,10 +522,26 @@ class FeedManager
                     $ogImage = $this->getOgImage($link);
 
                     $linkHtml = $link !== '#' ? "<a href=\"$link\">مشاهده خبر</a>" : 'بدون لینک';
-                    $message = "📰 سایت: $name\n🗞️ عنوان: <b>$title</b>\n\n📝 توضیحات: " . htmlspecialchars($description, ENT_QUOTES, 'UTF-8');
-                    $message .= "\n\n🕒 زمان انتشار: <i>$jalaliDate</i>\n\n🔗 $linkHtml";
+                    $message = "<b>📰 $name</b>\n";
+                    $message .= "<b>$title</b>\n\n";
+                    $message .= "📝 $description\n\n";
+                    $message .= "🕒 $jalaliDate\n\n";
+                    $message .= "🔗 $linkHtml";
 
                     try {
+                        $telegram->sendPhoto([
+                            'chat_id' => $this->chatId,
+                            'photo' => $ogImage,
+                            'caption' => $message,
+                            'parse_mode' => 'HTML',
+                            'disable_web_page_preview' => false,
+                            'reply_markup' => $replyMarkup
+                        ]);
+                        Log::info("Sent news #$index: $title from $name for chat_id: {$this->chatId}", ['link' => $link, 'pubDate' => $pubDate, 'ogImage' => $ogImage]);
+                        $storageManager->saveSentLink($link);
+                        sleep(0.5); // کاهش تاخیر
+                    } catch (\Exception $e) {
+                        Log::error("Failed to send news #$index: $title from $name: {$e->getMessage()}");
                         $telegram->sendMessage([
                             'chat_id' => $this->chatId,
                             'text' => $message,
@@ -532,11 +549,8 @@ class FeedManager
                             'disable_web_page_preview' => false,
                             'reply_markup' => $replyMarkup
                         ]);
-                        Log::info("Sent news #$index: $title from $name for chat_id: {$this->chatId}", ['link' => $link, 'pubDate' => $pubDate, 'ogImage' => $ogImage]);
+                        Log::info("Sent news #$index without photo: $title from $name for chat_id: {$this->chatId}", ['link' => $link]);
                         $storageManager->saveSentLink($link);
-                        sleep(1);
-                    } catch (\Exception $e) {
-                        Log::error("Failed to send news #$index: $title from $name: {$e->getMessage()}");
                     }
                 }
             } catch (\Exception $e) {
@@ -546,7 +560,7 @@ class FeedManager
         }
 
         if (!$hasNews) {
-            $text = 'هیچ خبر جدیدی با تصویر در 10 دقیقه اخیر یافت نشد. لطفاً بعداً دوباره تلاش کنید یا فیدها را بررسی کنید.';
+            $text = 'هیچ خبر جدیدی در 10 دقیقه اخیر یافت نشد. لطفاً بعداً دوباره تلاش کنید یا فیدها را بررسی کنید.';
             if (!empty($inactiveFeeds)) {
                 $text .= "\nفیدهای بدون خبر جدید: " . implode(', ', $inactiveFeeds);
             }
@@ -555,7 +569,7 @@ class FeedManager
                 'text' => $text,
                 'reply_markup' => $replyMarkup
             ]);
-            Log::info("No recent news with valid og:image found within 10 minutes for any feed for chat_id: {$this->chatId}", ['inactiveFeeds' => $inactiveFeeds]);
+            Log::info("No recent news found within 10 minutes for any feed for chat_id: {$this->chatId}", ['inactiveFeeds' => $inactiveFeeds]);
         }
 
         Log::info("Finished sendLatestNews for chat_id: {$this->chatId}", ['duration' => microtime(true) - $startTime, 'hasNews' => $hasNews]);
